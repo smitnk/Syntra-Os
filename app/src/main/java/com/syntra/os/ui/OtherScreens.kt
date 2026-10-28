@@ -206,6 +206,71 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         }
 
         item {
+            Section("Agentic OS") {
+                Text("Syntra reads this on every task (context/identity.md). Corrections become rules in memory/learnings.md; " +
+                    "skill results are saved in outputs/. The same folder is /root/agentic-os in Linux.", color = Dim, fontSize = 12.sp)
+                var identity by remember { mutableStateOf(vm.agenticOs.identity.readText()) }
+                OutlinedTextField(identity, { identity = it }, Modifier.fillMaxWidth(), label = { Text("Who you are, your work, goals, voice") }, minLines = 4, maxLines = 10)
+                TextButton({ vm.agenticOs.identity.writeText(identity) }) { Text("Save identity") }
+                val rules = remember(vm.tasks.size) { vm.agenticOs.learnings.readText().lines().filter { it.startsWith("- ") } }
+                Text("Learned rules (${rules.size})", color = Violet, fontSize = 12.sp)
+                rules.takeLast(8).forEach { Text(it, fontSize = 12.sp) }
+                if (rules.isNotEmpty()) TextButton({ vm.agenticOs.learnings.writeText("# Learnings\n") }) { Text("Clear rules", color = Danger) }
+                val outs = remember(vm.tasks.size) { vm.agenticOs.outputs.walkTopDown().count { it.isFile } }
+                Text("Saved outputs: $outs · Slash commands: /code and /<skill name>", color = Dim, fontSize = 12.sp)
+            }
+        }
+
+        item {
+            Section("Automations") {
+                Text("Zapier connects Syntra to YouTube, Instagram, Gmail, Sheets and 8,000+ apps. At mcp.zapier.com create a server, " +
+                    "choose \"Other\", add the actions you want, then paste the connection token here.", color = Dim, fontSize = 12.sp)
+                val zap = s.mcpServers.firstOrNull { it.name == "zapier" }
+                var zapToken by remember { mutableStateOf(zap?.token.orEmpty()) }
+                OutlinedTextField(zapToken, { zapToken = it.trim() }, Modifier.fillMaxWidth(), label = { Text("Zapier MCP token") },
+                    singleLine = true, visualTransformation = PasswordVisualTransformation())
+                Row {
+                    TextButton({
+                        val others = s.mcpServers.filterNot { it.name == "zapier" }
+                        vm.updateSettings(s.copy(mcpServers = if (zapToken.isBlank()) others else others + McpServer("zapier", "https://mcp.zapier.com/api/v1/connect", zapToken)))
+                    }) { Text(if (zap == null) "Connect Zapier" else "Update Zapier") }
+                    if (zap != null) TextButton({
+                        mcpMsg = "Connecting…"
+                        scope.launch { mcpMsg = runCatching { McpClient(zap).listTools().toString().take(600) }.getOrElse { "Failed: ${it.message}" } }
+                    }) { Text("Test") }
+                }
+                Text("Telegram: talk to Syntra from anywhere. Create a bot with @BotFather, paste its token, send it a message, " +
+                    "then add the chat id it replies with.", color = Dim, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                OutlinedTextField(s.telegramToken, { vm.updateSettings(s.copy(telegramToken = it.trim())) }, Modifier.fillMaxWidth(),
+                    label = { Text("Telegram bot token") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+                OutlinedTextField(s.telegramChats, { vm.updateSettings(s.copy(telegramChats = it)) }, Modifier.fillMaxWidth(),
+                    label = { Text("Allowed chat ids (comma-separated)") }, singleLine = true)
+                if (vm.telegramStatus.isNotBlank()) Text(vm.telegramStatus, color = Dim, fontSize = 12.sp)
+            }
+        }
+
+        item {
+            Section("Team & Linux") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Team planning")
+                        Text("The decision model plans first, the vision model reads images, then the lead acts.", color = Dim, fontSize = 12.sp)
+                    }
+                    Switch(s.teamPlanning, { vm.updateSettings(s.copy(teamPlanning = it)) })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Ask before Linux commands")
+                        Text("Off lets the coding harness run commands in the app's Ubuntu sandbox without asking.", color = Dim, fontSize = 12.sp)
+                    }
+                    Switch(s.askLinux, { vm.updateSettings(s.copy(askLinux = it)) })
+                }
+                Text("Local AI API (for Hermes, Aider, scripts): http://127.0.0.1:8099/v1 · model \"syntra\" (on-device) or " +
+                    "\"openrouter/<model>\" (cloud). Ubuntu already has OPENAI_BASE_URL and OPENAI_API_KEY set.", color = Dim, fontSize = 12.sp)
+            }
+        }
+
+        item {
             Section("Memory") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {

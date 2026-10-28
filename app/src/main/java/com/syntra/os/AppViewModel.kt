@@ -32,6 +32,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.jsonObject
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = Store(app.filesDir)
@@ -83,7 +84,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var job: Job? = null
     private var approval: CompletableDeferred<Boolean>? = null
 
+    val server = com.syntra.os.local.LocalServer(engines, { settings }, settings.localApiKey)
+    val agenticOs = com.syntra.os.agent.AgenticOs(app)
+
     init {
+        store.save("settings", Settings.serializer(), settings) // persists a freshly generated local API key
+        server.start()
+        runCatching { com.syntra.os.device.Linux.configure(app, settings.localApiKey) }
         java.io.File(app.filesDir, "crash.txt").takeIf { it.exists() }?.let { f ->
             chat = listOf(Step(StepKind.ERROR, "system", "Syntra crashed last time:\n" + f.readText().lines().take(6).joinToString("\n")))
             f.delete()
@@ -116,7 +123,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         job = viewModelScope.launch {
             val e = env { step -> status = "${step.who}: ${step.text}".take(90); editTask(task.id) { it.copy(steps = it.steps + step) } }
             try {
-                val answer = Agent(e).run(text, history, image)
+                val slash = com.syntra.os.agent.AgenticOs.parseSlash(text, skills)
+                val code = text.startsWith("/code")
+                val goal = if (slash != null && (slash.first != null || code)) slash.second.ifBlank { text } else text
+                if (slash != null && slash.first == null && !code) error("No skill called ${text.substringBefore(' ')} — see the Skills tab (or use /code).")
+                val answer = Agent(e).run(goal, history, image, skill = slash?.first, code = code)
                 chat = chat + Step(StepKind.ANSWER, settings.slot(settings.primaryRole).model, answer)
                 editTask(task.id) { it.copy(status = TaskStatus.DONE, steps = it.steps + Step(StepKind.ANSWER, "syntra", answer)) }
                 lastAnswer = answer
@@ -165,14 +176,57 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun installLinux() = viewModelScope.launch {
-        try { com.syntra.os.device.Linux.install(getApplication()) { linuxStatus = it }; linuxInstalled = true; linux.start() }
+        try {
+            com.syntra.os.device.Linux.install(getApplication()) { linuxStatus = it }
+            com.syntra.os.device.Linux.configure(getApplication(), settings.localApiKey)
+            linuxInstalled = true; linux.start()
+        }
         catch (e: Exception) { linuxStatus = "Install failed: ${e.message}" }
     }
 
     fun linuxSend(cmd: String) { linuxLines += "$ $cmd"; linux.start(); linux.send(cmd) }
     fun linuxRestart() { linux.stop(); linuxLines.clear(); linux.start() }
 
-    override fun onCleared() { linux.stop(); super.onCleared() }
+    override fun onCleared() { linux.stop(); server.stop(); super.onCleared() }
+
+    // ---- Remote access over Telegram ("access from anywhere") ----
+    private var telegramJob: Job? = null
+    var telegramStatus by mutableStateOf(""); private set
+
+    fun startTelegram() {
+        telegramJob?.cancel()
+        val token = settings.telegramToken.trim()
+        if (token.isBlank()) { telegramStatus = ""; return }
+        telegramJob = viewModelScope.launch {
+            var offset = 0L
+            telegramStatus = "Connecting…"
+            while (isActive) {
+                try {
+                    val r = com.syntra.os.core.httpCall("https://api.telegram.org/bot$token/getUpdates?timeout=50&offset=$offset")
+                    if (r.code != 200) { telegramStatus = "Telegram error ${r.code}"; delay(15_000); continue }
+                    telegramStatus = "Listening on Telegram"
+                    val updates = (com.syntra.os.core.json.parseToJsonElement(r.body).jsonObject["result"] as? kotlinx.serialization.json.JsonArray).orEmpty()
+                    for (u in updates) {
+                        val o = u.jsonObject
+                        offset = (o["update_id"]?.toString()?.toLongOrNull() ?: 0) + 1
+                        val msg = o["message"]?.jsonObject ?: continue
+                        val chatIdStr = msg["chat"]?.jsonObject?.get("id")?.toString() ?: continue
+                        val text = (msg["text"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: continue
+                        val allowed = settings.telegramChats.split(',').map { it.trim() }.filter { it.isNotBlank() }
+                        val reply = if (chatIdStr !in allowed) "Not authorised. Add chat id $chatIdStr in Syntra → Setup → Automations."
+                        else runCatching {
+                            // Remote runs can't be approved on the phone, so sensitive tools are denied.
+                            val e2 = AgentEnv(getApplication(), settings, skills, engines, { graph }, ::updateGraph, log = {}, approve = { false })
+                            val slash = com.syntra.os.agent.AgenticOs.parseSlash(text, skills)
+                            Agent(e2).run(slash?.second?.ifBlank { text } ?: text, emptyList(), skill = slash?.first, code = text.startsWith("/code"))
+                        }.getOrElse { "Error: ${it.message}" }
+                        com.syntra.os.core.httpCall("https://api.telegram.org/bot$token/sendMessage", "POST",
+                            kotlinx.serialization.json.buildJsonObject { put("chat_id", kotlinx.serialization.json.JsonPrimitive(chatIdStr)); put("text", kotlinx.serialization.json.JsonPrimitive(reply.take(4000))) })
+                    }
+                } catch (e: CancellationException) { throw e } catch (e: Exception) { telegramStatus = "Telegram: ${e.message}"; delay(15_000) }
+            }
+        }
+    }
 
     fun cancel() { approval?.complete(false); engines.stopAll(); job?.cancel() }
 
@@ -208,7 +262,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteModel(role: ModelRole) { models.delete(role); installedTick++ }
 
     fun updateGraph(g: Graph) { graph = g; store.save("graph", Graph.serializer(), g) }
-    fun updateSettings(s: Settings) { settings = s; store.save("settings", Settings.serializer(), s) }
+    fun updateSettings(s: Settings) {
+        val tg = s.telegramToken != settings.telegramToken
+        settings = s; store.save("settings", Settings.serializer(), s)
+        if (tg) startTelegram()
+    }
     private fun saveSkills(list: List<Skill>) { skills = list; store.save("skills", ListSerializer(Skill.serializer()), list) }
     fun toggleSkill(s: Skill) = saveSkills(skills.map { if (it == s) it.copy(enabled = !it.enabled) else it })
     fun removeSkill(s: Skill) = saveSkills(skills - s)

@@ -82,6 +82,8 @@ class MainActivity : ComponentActivity() {
             onCommand = { vm.heard = ""; vm.send(it); if (!vm.settings.alwaysListening) voice.stop() }, // chat mode: push-to-talk only
             onState = { s, heard -> vm.voiceState = s; if (s == VoiceState.LISTENING) vm.heard = heard else if (heard.isEmpty() && s != VoiceState.WAITING_WAKE) vm.heard = "" })
         voice.onLevel = { vm.micLevel = it }
+        if (savedInstanceState == null) vm.startTelegram()
+        startForegroundService(android.content.Intent(this, SyntraService::class.java)) // keeps the AI core, local API and Linux alive
         setContent {
             SyntraTheme {
                 var tab by rememberSaveable { mutableIntStateOf(0) }

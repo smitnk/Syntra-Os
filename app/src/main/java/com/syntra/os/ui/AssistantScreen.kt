@@ -147,14 +147,14 @@ fun Orb(energy: Float, modifier: Modifier = Modifier, level: Float = 0f) {
 }
 
 @Composable
-private fun TeamRow(active: Set<ModelRole>, busy: Boolean) {
+private fun TeamRow(active: Set<ModelRole>, busy: Boolean, installed: Set<ModelRole> = ModelRole.entries.toSet()) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
         ModelRole.entries.forEach { r ->
             val on = r in active
             Column(Modifier.padding(horizontal = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(Modifier.size(30.dp).background(if (on) Clay else Raised, CircleShape)
-                    .border(1.dp, if (on) ClaySoft else Line, CircleShape)
-                    .semantics { contentDescription = "${r.label} model ${if (on) "working" else "idle"}" },
+                    .border(if (r in installed) 1.5.dp else 1.dp, if (on) ClaySoft else if (r in installed) Clay.copy(alpha = 0.6f) else Line, CircleShape)
+                    .semantics { contentDescription = "${r.label} model ${if (on) "working" else if (r in installed) "ready" else "not downloaded"}" },
                     contentAlignment = Alignment.Center) {
                     Text(r.name.take(1), color = if (on) Bg else Dim, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
@@ -212,10 +212,10 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean
                     else -> "Say \"${vm.settings.wakeWords.split(',').first().trim().replaceFirstChar { it.uppercase() }}\" or type below."
                 }, color = Dim, fontSize = 13.sp)
                 Spacer(Modifier.height(28.dp))
-                TeamRow(vm.activeRoles, false)
+                TeamRow(vm.activeRoles, false, remember(vm.installedTick) { vm.engines.installedRoles().toSet() })
                 Spacer(Modifier.height(24.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("What's on my screen?", "What do you remember about me?", "Open YouTube", "Research today's AI news").forEach { q ->
+                    listOf("Research today's AI news", "/code build a to-do web app in Python", "What's on my screen?", "Every morning at 8, send me AI news").forEach { q ->
                         Text(q, fontSize = 13.sp, color = Ink, modifier = Modifier.border(1.dp, Line, RoundedCornerShape(50))
                             .clickable { vm.send(q) }.padding(horizontal = 14.dp, vertical = 9.dp))
                     }
@@ -224,7 +224,7 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean
         } else {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Orb(energy, Modifier.size(52.dp), vm.micLevel); Spacer(Modifier.width(10.dp))
-                Box(Modifier.weight(1f)) { TeamRow(vm.activeRoles, vm.busy) }
+                Box(Modifier.weight(1f)) { TeamRow(vm.activeRoles, vm.busy, remember(vm.installedTick) { vm.engines.installedRoles().toSet() }) }
             }
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -246,7 +246,7 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean
                     Column {
                         Text("THINKING", style = MaterialTheme.typography.labelSmall, color = Clay)
                         if (vm.status.isNotBlank()) Text(vm.status, color = Dim, fontSize = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 2)
-                        if (vm.streaming.isNotBlank()) Text(vm.streaming.replace(Regex("<tool>.*?(</tool>|$)", RegexOption.DOT_MATCHES_ALL), "…"),
+                        if (vm.streaming.isNotBlank()) Text(vm.streaming.replace(Regex("<tool(_call)?>.*?(</tool(_call)?>|$)", RegexOption.DOT_MATCHES_ALL), "").ifBlank { "…" },
                             style = MaterialTheme.typography.bodyLarge, color = Ink.copy(alpha = 0.85f))
                     }
                 }
@@ -267,6 +267,15 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean
             }
         }
 
+        if (input.startsWith("/") && !input.contains(' ')) {
+            val opts = listOf("code" to "coding harness") + vm.skills.map { com.syntra.os.agent.AgenticOs.slug(it.name) to it.description }
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                opts.filter { it.first.startsWith(input.drop(1).lowercase()) }.take(8).forEach { (cmd, _) ->
+                    Text("/$cmd", fontSize = 13.sp, color = Ink, modifier = Modifier.border(1.dp, Clay, RoundedCornerShape(50))
+                        .clickable { input = "/$cmd " }.padding(horizontal = 12.dp, vertical = 7.dp))
+                }
+            }
+        }
         vm.attachment?.let {
             Row(Modifier.padding(horizontal = 20.dp).background(Raised, RoundedCornerShape(50)).padding(start = 12.dp),
                 verticalAlignment = Alignment.CenterVertically) {

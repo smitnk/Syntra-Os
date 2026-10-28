@@ -10,6 +10,7 @@
 #include "mtmd-helper.h"
 
 struct Engine {
+    bool owns_model = true; // false for forked contexts that share another engine's weights
     llama_model *model = nullptr;
     llama_context *ctx = nullptr;
     const llama_vocab *vocab = nullptr;
@@ -19,6 +20,7 @@ struct Engine {
     std::vector<llama_token> cached; // tokens currently in the KV cache (prompt + generated)
     std::vector<llama_token> cp_toks; // checkpoint: stable prompt prefix (system prompt)...
     std::vector<uint8_t> cp_state;   // ...and the saved model state right after it
+    bool cp_dirty = false;           // checkpoint changed since last saveCheckpoint
 };
 
 static std::once_flag g_backend;
@@ -36,7 +38,7 @@ static void throw_rt(JNIEnv *env, const std::string &msg) {
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_syntra_os_local_LlamaNative_load(JNIEnv *env, jclass, jstring jpath, jstring jmmproj, jint n_ctx, jint n_threads) {
+Java_com_syntra_os_local_LlamaNative_load(JNIEnv *env, jclass, jstring jpath, jstring jmmproj, jint n_ctx, jint n_threads, jint n_threads_batch) {
     std::call_once(g_backend, [] { llama_backend_init(); });
     auto *e = new Engine();
     auto mp = llama_model_default_params();
@@ -47,7 +49,7 @@ Java_com_syntra_os_local_LlamaNative_load(JNIEnv *env, jclass, jstring jpath, js
     cp.n_ctx = n_ctx;
     cp.n_batch = e->n_batch;
     cp.n_threads = n_threads;
-    cp.n_threads_batch = n_threads;
+    cp.n_threads_batch = n_threads_batch; // prompt reading is compute-bound: use every core
     e->ctx = llama_init_from_model(e->model, cp);
     if (!e->ctx) { llama_model_free(e->model); delete e; throw_rt(env, "failed to create context"); return 0; }
     e->vocab = llama_model_get_vocab(e->model);
@@ -55,11 +57,56 @@ Java_com_syntra_os_local_LlamaNative_load(JNIEnv *env, jclass, jstring jpath, js
     if (!mm.empty()) {
         auto mpp = mtmd_context_params_default();
         mpp.use_gpu = false;
-        mpp.n_threads = n_threads;
+        mpp.n_threads = n_threads_batch;
         e->mtmd = mtmd_init_from_file(mm.c_str(), e->model, mpp);
         // A missing projector only disables image/audio input; text keeps working.
     }
     return reinterpret_cast<jlong>(e);
+}
+
+// Second context on the same weights (no extra model RAM), for background jobs like memory extraction.
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_syntra_os_local_LlamaNative_fork(JNIEnv *env, jclass, jlong h, jint n_ctx, jint n_threads) {
+    auto *src = reinterpret_cast<Engine *>(h);
+    auto cp = llama_context_default_params();
+    cp.n_ctx = n_ctx; cp.n_batch = src->n_batch; cp.n_threads = n_threads; cp.n_threads_batch = n_threads;
+    llama_context *ctx = llama_init_from_model(src->model, cp);
+    if (!ctx) { throw_rt(env, "failed to create context"); return 0; }
+    auto *e = new Engine();
+    e->owns_model = false; e->model = src->model; e->ctx = ctx; e->vocab = src->vocab;
+    return reinterpret_cast<jlong>(e);
+}
+
+// Checkpoint persistence: [u32 n_tokens][tokens][state bytes]. Lets the system prompt survive app restarts.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_syntra_os_local_LlamaNative_saveCheckpoint(JNIEnv *env, jclass, jlong h, jstring jpath) {
+    auto *e = reinterpret_cast<Engine *>(h);
+    if (e->cp_toks.empty() || !e->cp_dirty) return false;
+    e->cp_dirty = false;
+    FILE *f = fopen(jstr(env, jpath).c_str(), "wb");
+    if (!f) return false;
+    uint32_t n = (uint32_t) e->cp_toks.size();
+    bool ok = fwrite(&n, 4, 1, f) == 1 && fwrite(e->cp_toks.data(), sizeof(llama_token), n, f) == n &&
+              fwrite(e->cp_state.data(), 1, e->cp_state.size(), f) == e->cp_state.size();
+    fclose(f);
+    return ok;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_syntra_os_local_LlamaNative_loadCheckpoint(JNIEnv *env, jclass, jlong h, jstring jpath) {
+    auto *e = reinterpret_cast<Engine *>(h);
+    FILE *f = fopen(jstr(env, jpath).c_str(), "rb");
+    if (!f) return false;
+    uint32_t n = 0;
+    bool ok = fread(&n, 4, 1, f) == 1 && n > 0 && n < 1000000;
+    std::vector<llama_token> toks(ok ? n : 0);
+    ok = ok && fread(toks.data(), sizeof(llama_token), n, f) == n;
+    std::vector<uint8_t> state;
+    if (ok) { uint8_t buf[65536]; size_t r; while ((r = fread(buf, 1, sizeof buf, f)) > 0) state.insert(state.end(), buf, buf + r); }
+    fclose(f);
+    if (!ok || state.empty()) return false;
+    e->cp_toks = std::move(toks); e->cp_state = std::move(state);
+    return true;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -82,7 +129,7 @@ Java_com_syntra_os_local_LlamaNative_free(JNIEnv *, jclass, jlong h) {
     auto *e = reinterpret_cast<Engine *>(h);
     if (e->mtmd) mtmd_free(e->mtmd);
     llama_free(e->ctx);
-    llama_model_free(e->model);
+    if (e->owns_model) llama_model_free(e->model);
     delete e;
 }
 
@@ -160,6 +207,7 @@ Java_com_syntra_os_local_LlamaNative_generate(JNIEnv *env, jclass, jlong h, jstr
                 e->cp_state.resize(llama_state_seq_get_size(e->ctx, 0));
                 e->cp_state.resize(llama_state_seq_get_data(e->ctx, e->cp_state.data(), e->cp_state.size(), 0));
                 e->cp_toks.assign(toks.begin(), toks.begin() + n_cp);
+                e->cp_dirty = true;
             }
             ok = ok && eval(n_cp, toks.size());
         } else ok = eval(keep, toks.size());

@@ -60,7 +60,7 @@ fun LinuxScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("Linux", style = MaterialTheme.typography.headlineSmall, color = Ink)
-                Text("Ubuntu 24.04 inside Syntra (proot) — Syntra's shell tool runs here too.", color = Dim, fontSize = 12.sp)
+                Text("Ubuntu 24.04 inside Syntra. ai, Hermes and Aider here use Syntra's local models (or cloud).", color = Dim, fontSize = 12.sp)
             }
             if (vm.linuxInstalled) IconButton(vm::linuxRestart) { Icon(Icons.Outlined.RestartAlt, "Restart shell", tint = Dim) }
         }
@@ -81,8 +81,16 @@ fun LinuxScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     }
                 }
                 Spacer(Modifier.height(8.dp))
+                Text("Install", color = Dim, fontSize = 11.sp)
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("ls -la", "apt update", "apt install -y python3", "python3 --version", "uname -a", "df -h").forEach { q ->
+                    Linux.INSTALLERS.forEach { (label, script) ->
+                        Text(label, fontSize = 12.sp, color = Bg, modifier = Modifier.background(Clay, RoundedCornerShape(50))
+                            .clickable { vm.linuxSend(script) }.padding(horizontal = 12.dp, vertical = 7.dp))
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("ai \"write a python hello world\"", "hermes -q \"what can you do?\" -Q", "ls -la", "apt update", "apt install -y python3", "python3 --version", "uname -a", "df -h").forEach { q ->
                         Text(q, fontSize = 12.sp, color = Ink, fontFamily = FontFamily.Monospace,
                             modifier = Modifier.border(1.dp, Line, RoundedCornerShape(50)).clickable { vm.linuxSend(q) }
                                 .padding(horizontal = 10.dp, vertical = 6.dp))

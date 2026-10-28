@@ -36,16 +36,15 @@ object LfmPrompt {
         val lastUser = messages.indexOfLast { it.str("role") == "user" }
         messages.forEachIndexed { i, m ->
             val role = m.str("role") ?: "user"
-            var content = m.str("content").orEmpty()
+            var content = textOf(m)
             when (role) {
                 "system" -> {
-                    if (tools != null && tools.isNotEmpty())
-                        content += "\n\n<tools>\n" + tools.joinToString("\n") { it.jsonObject["function"].toString() } + "\n</tools>"
+                    if (tools != null && tools.isNotEmpty()) content += "\n\n<tools>\n" + tools.joinToString("\n") { compactTool(it) } + "\n</tools>"
                     sb.append("<|im_start|>system\n").append(content).append("<|im_end|>\n")
                     if (i == 0) stable = sb.toString().toByteArray().size
                 }
                 // Raw generated text is kept verbatim so the next prompt extends the cached tokens exactly.
-                "assistant" -> sb.append(GEN).append(m.str("raw") ?: content).append("<|im_end|>\n")
+                "assistant" -> sb.append(GEN).append(m.str("raw") ?: (content + toolCallMarkup(m))).append("<|im_end|>\n")
                 "tool" -> sb.append("<|im_start|>tool\n<tool_response>\n").append(content).append("\n</tool_response><|im_end|>\n")
                 else -> {
                     if (mediaMarker != null && i == lastUser) content = "$mediaMarker\n$content"
@@ -55,6 +54,35 @@ object LfmPrompt {
         }
         sb.append(GEN)
         return RenderedPrompt(sb.toString(), stable)
+    }
+
+    /** Shorter than the full JSON schema (fewer tokens to read) while keeping names, descriptions and required args. */
+    fun compactTool(t: kotlinx.serialization.json.JsonElement): String {
+        val f = t.jsonObject["function"]?.jsonObject ?: t.jsonObject
+        val params = f["parameters"]?.jsonObject
+        val props = params?.get("properties")?.jsonObject.orEmpty().mapValues { (_, v) -> JsonPrimitive(v.jsonObject.str("description").orEmpty()) }
+        return buildJsonObject {
+            put("name", f["name"] ?: JsonPrimitive(""))
+            put("description", f["description"] ?: JsonPrimitive(""))
+            put("parameters", JsonObject(props))
+            params?.get("required")?.let { put("required", it) }
+        }.toString()
+    }
+
+    /** OpenAI message content can be a string or a list of {type:text,text} parts. */
+    fun textOf(m: JsonObject): String = when (val c = m["content"]) {
+        is JsonPrimitive -> if (c.isString) c.content else ""
+        is JsonArray -> c.joinToString("") { (it as? JsonObject)?.str("text") ?: "" }
+        else -> ""
+    }
+
+    /** OpenAI assistant tool_calls rendered in LFM3's own markup (for clients such as Hermes or Aider). */
+    private fun toolCallMarkup(m: JsonObject): String = (m["tool_calls"] as? JsonArray).orEmpty().joinToString("\n\n", prefix = "") { tc ->
+        val fn = tc.jsonObject["function"]?.jsonObject ?: return@joinToString ""
+        val args = runCatching { json.parseToJsonElement(fn.str("arguments") ?: "{}").jsonObject }.getOrDefault(JsonObject(emptyMap()))
+        "<tool_call>\n<function=${fn.str("name")}>\n" + args.entries.joinToString("") { (k, v) ->
+            "<parameter=$k>\n${if (v is JsonPrimitive && v.isString) v.content else v.toString()}\n</parameter>\n"
+        } + "</function>\n</tool_call>"
     }
 
     private val NATIVE = Regex("<tool_call>\\s*<function=([\\w.-]+)>(.*?)</function>\\s*</tool_call>", RegexOption.DOT_MATCHES_ALL)
@@ -129,48 +157,63 @@ object LfmPrompt {
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class LocalEngines(private val models: ModelManager) {
-    private class Loaded(val handle: Long, val media: Boolean, var lastUse: Long)
+    private class Loaded(val handle: Long, val media: Boolean, var lastUse: Long, val cpFile: java.io.File) { var bg: Long = 0 }
     private val loaded = java.util.concurrent.ConcurrentHashMap<ModelRole, Loaded>()
     private val locks = ModelRole.entries.associateWith { Mutex() }
+    private val bgLocks = ModelRole.entries.associateWith { Mutex() }
     private val loadLock = Mutex()
-    private val pool = Dispatchers.Default.limitedParallelism(ModelRole.entries.size)
+    private val pool = Dispatchers.Default.limitedParallelism(ModelRole.entries.size * 2)
     /** Roles currently generating; the UI lights these up. */
     @Volatile var active: Set<ModelRole> = emptySet(); private set
+
+    fun installedRoles() = ModelRole.entries.filter { models.installed(it) != null }
 
     private suspend fun engine(role: ModelRole): Loaded = loadLock.withLock {
         loaded[role]?.let { it.lastUse = System.currentTimeMillis(); return it }
         val files = models.installed(role) ?: error("${role.label} model not downloaded — open Setup → On-device models")
         // shortcut: keep at most 2 models resident (~2.5 GB) to avoid low-memory kills; raise on 16 GB phones.
-        if (loaded.size >= 2) loaded.entries.filter { !locks.getValue(it.key).isLocked }.minByOrNull { it.value.lastUse }?.let {
-            loaded.remove(it.key); LlamaNative.free(it.value.handle)
-        }
-        // Big cores only: mixing in little cores makes every token wait for the slowest thread.
-        val threads = if (Runtime.getRuntime().availableProcessors() >= 8) 4 else 2
-        val h = withContext(pool) { LlamaNative.load(files.model.path, files.mmproj?.path, 8192, threads) }
-        Loaded(h, LlamaNative.hasMedia(h), System.currentTimeMillis()).also { loaded[role] = it }
+        if (loaded.size >= 2) loaded.entries.filter { !locks.getValue(it.key).isLocked && !bgLocks.getValue(it.key).isLocked }
+            .minByOrNull { it.value.lastUse }?.let { (r, l) -> loaded.remove(r); if (l.bg != 0L) LlamaNative.free(l.bg); LlamaNative.free(l.handle) }
+        val cores = Runtime.getRuntime().availableProcessors()
+        // Generation is memory-bound: big cores only. Prompt reading is compute-bound: all cores.
+        val gen = if (cores >= 8) 4 else 2
+        val h = withContext(pool) { LlamaNative.load(files.model.path, files.mmproj?.path, 8192, gen, cores) }
+        val cp = java.io.File(files.model.parentFile, "checkpoint.bin")
+        withContext(pool) { LlamaNative.loadCheckpoint(h, cp.path) }
+        Loaded(h, LlamaNative.hasMedia(h), System.currentTimeMillis(), cp).also { loaded[role] = it }
     }
 
-    suspend fun complete(role: ModelRole, messages: List<JsonObject>, tools: JsonArray?, media: String?, onText: ((String) -> Unit)?): ChatReply =
-        locks.getValue(role).withLock {
+    /**
+     * [background] runs on a second context over the same weights, so memory extraction and
+     * other side jobs never evict the main conversation's cache.
+     */
+    suspend fun complete(role: ModelRole, messages: List<JsonObject>, tools: JsonArray?, media: String?, onText: ((String) -> Unit)?,
+                         background: Boolean = false, maxTokens: Int = 512): ChatReply =
+        (if (background) bgLocks else locks).getValue(role).withLock {
             val e = engine(role)
-            val useMedia = media?.takeIf { e.media }
+            val handle = if (!background) e.handle else {
+                if (e.bg == 0L) e.bg = withContext(pool) { LlamaNative.fork(e.handle, 2048, 2) }
+                e.bg
+            }
+            val useMedia = media?.takeIf { e.media && !background }
             val p = LfmPrompt.render(messages, tools, if (useMedia != null) LlamaNative.marker() else null)
             active = active + role
             try {
                 val buf = ByteArrayOutputStream()
                 var lastPush = 0L
                 val bytes = withContext(pool) {
-                    LlamaNative.generate(e.handle, p.text, useMedia, 512, { piece ->
+                    LlamaNative.generate(handle, p.text, useMedia, maxTokens, { piece ->
                         buf.write(piece)
                         val now = System.currentTimeMillis()
                         if (onText != null && now - lastPush > 120) { lastPush = now; onText(buf.toString(Charsets.UTF_8.name())) }
                         true
-                    }, p.stableBytes)
+                    }, if (background) 0 else p.stableBytes)
                 }
+                if (!background) withContext(pool) { LlamaNative.saveCheckpoint(handle, e.cpFile.path) }
                 LfmPrompt.parse(String(bytes, Charsets.UTF_8))
             } finally { active = active - role }
         }
 
-    fun stopAll() = loaded.values.toList().forEach { LlamaNative.stop(it.handle) }
+    fun stopAll() = loaded.values.toList().forEach { LlamaNative.stop(it.handle); if (it.bg != 0L) LlamaNative.stop(it.bg) }
     fun isLoaded(role: ModelRole) = loaded.containsKey(role)
 }

@@ -51,6 +51,15 @@ data class Settings(
     val wakeWords: String = "syntra, jarvis",
     val askPhoneActions: Boolean = true,
     val autoMemory: Boolean = true,
+    /** Decision model drafts a plan before the lead acts (when it's available). */
+    val teamPlanning: Boolean = true,
+    /** Ask before shell / code_agent / Hermes run in the app's Ubuntu sandbox. */
+    val askLinux: Boolean = true,
+    val telegramToken: String = "",
+    /** Chat ids allowed to command Syntra over Telegram, comma-separated. */
+    val telegramChats: String = "",
+    /** Random key guarding the local OpenAI-compatible API (127.0.0.1:8099). */
+    val localApiKey: String = "sk-syntra-" + java.util.UUID.randomUUID().toString().replace("-", ""),
 ) {
     fun slot(role: ModelRole) = slots.firstOrNull { it.role == role } ?: ModelSlot(role)
     fun provider(id: String) = providers.firstOrNull { it.id == id }

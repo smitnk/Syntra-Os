@@ -109,3 +109,33 @@ class LocalTest {
         assertEquals(null, com.syntra.os.voice.afterWakeWord("what time is it", w))
     }
 }
+
+class OsTest {
+    @Test fun slashPicksSkill() {
+        val skills = listOf(com.syntra.os.core.Skill("UI Critic", "d", "p"), com.syntra.os.core.Skill("Researcher", "d", "p"))
+        val (s, rest) = com.syntra.os.agent.AgenticOs.parseSlash("/ui-critic check my app", skills)!!
+        assertEquals("UI Critic", s!!.name)
+        assertEquals("check my app", rest)
+        assertEquals(null, com.syntra.os.agent.AgenticOs.parseSlash("/code make a game", skills)!!.first)
+        assertEquals(null, com.syntra.os.agent.AgenticOs.parseSlash("hello", skills))
+    }
+
+    @Test fun approvalRules() {
+        val empty = kotlinx.serialization.json.JsonObject(emptyMap())
+        assertTrue(com.syntra.os.agent.isSensitive("shell", empty, askPhone = true, askLinux = true))
+        assertTrue(!com.syntra.os.agent.isSensitive("shell", empty, askPhone = true, askLinux = false))
+        assertTrue(com.syntra.os.agent.isSensitive("mcp__zapier__send_email", empty, askPhone = false, askLinux = false))
+        assertTrue(!com.syntra.os.agent.isSensitive("web_search", empty, askPhone = true, askLinux = true))
+    }
+
+    @Test fun compactToolKeepsNamesAndRequired() {
+        val t = com.syntra.os.agent.TOOLS.first { it.toString().contains("\"web_search\"") }
+        val c = com.syntra.os.local.LfmPrompt.compactTool(t)
+        assertEquals("""{"name":"web_search","description":"Search the web (DuckDuckGo). Use for news, facts, anything current. Then web_fetch the best result.","parameters":{"query":"Search words"},"required":["query"]}""", c)
+    }
+
+    @Test fun contentPartsAreText() {
+        val m = com.syntra.os.core.json.parseToJsonElement("""{"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}""")
+        assertEquals("ab", com.syntra.os.local.LfmPrompt.textOf(m as kotlinx.serialization.json.JsonObject))
+    }
+}

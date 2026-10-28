@@ -28,6 +28,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.putJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.buildJsonObject
 import org.jsoup.Jsoup
 import java.io.File
 import kotlin.coroutines.coroutineContext
@@ -46,10 +49,11 @@ class AgentEnv(
 )
 
 /** Calls the model bound to a role: on-device llama.cpp or any OpenAI-compatible provider. */
-suspend fun callModel(env: AgentEnv, role: ModelRole, messages: List<JsonObject>, tools: JsonArray?, media: String?, onText: ((String) -> Unit)?): ChatReply {
+suspend fun callModel(env: AgentEnv, role: ModelRole, messages: List<JsonObject>, tools: JsonArray?, media: String?, onText: ((String) -> Unit)?,
+                      background: Boolean = false): ChatReply {
     val slot = env.settings.slot(role)
     val provider = env.settings.provider(slot.providerId) ?: error("No provider set for the ${role.label} model (Setup)")
-    return if (provider.local) env.engines.complete(role, messages, tools, media, onText)
+    return if (provider.local) env.engines.complete(role, messages, tools, media, onText, background = background)
     else ChatClient.complete(provider, slot.model, messages, tools)
 }
 
@@ -64,24 +68,45 @@ class Agent(private val env: AgentEnv) {
     private val blackboard = StringBuilder()
     private var media: String? = null
     private val workspace = File(env.context.filesDir, "workspace").apply { mkdirs() }
+    private val os = AgenticOs(env.context)
+    private var skill: Skill? = null
+    private var code = false
 
-    suspend fun run(goal: String, history: List<JsonObject>, image: String? = null, maxSteps: Int = 12): String {
-        media = image
+    companion object {
+        /** MCP tool lists, fetched once per app session (Zapier etc. expose dozens of actions). */
+        private val mcpTools = java.util.concurrent.ConcurrentHashMap<String, List<JsonObject>>()
+    }
+
+    /** A role can answer if its model is downloaded (on-device) or its cloud provider is configured. */
+    fun available(role: ModelRole): Boolean {
+        val p = settings.provider(settings.slot(role).providerId) ?: return false
+        return if (p.local) env.engines.installedRoles().contains(role) else p.apiKey.isNotBlank() || "127.0.0.1" in p.baseUrl
+    }
+
+    suspend fun run(goal: String, history: List<JsonObject>, image: String? = null, skill: Skill? = null, code: Boolean = false,
+                    maxSteps: Int = if (code) 30 else 14): String {
+        media = image; this.skill = skill; this.code = code
         val lead = settings.primaryRole
+        val tools = JsonArray(TOOLS + loadMcpTools())
+        val team = teamBriefing(goal, image)
         val messages = mutableListOf(message("system", systemPrompt())).apply {
             addAll(history.takeLast(10))
-            // Memory goes with the newest user turn, so the system prompt (cached on-device) never changes.
-            val mem = env.graph().let { g -> (g.search(goal).take(8).map { it.label } + g.nodes.takeLast(8).map { it.label }).distinct() }
-                .mapNotNull { env.graph().find(it) }.joinToString("\n") { "- ${it.label} [${it.type}] ${it.notes.take(120)}" }
-            val note = if (image != null) "\n(An image is attached; the VISION teammate can see it.)" else ""
-            add(message("user", goal + note + if (mem.isNotBlank()) "\n\n[What you remember]\n$mem" else ""))
+            // Memory goes with the newest user turn, so the system prompt (cached on-device) rarely changes.
+            val g = env.graph()
+            val mem = (g.search(goal).take(8) + g.nodes.takeLast(6)).distinctBy { it.id }
+                .joinToString("\n") { "- ${it.label} [${it.type}] ${it.notes.take(120)}" }
+            add(message("user", goal + team + if (mem.isNotBlank()) "\n\n[What you remember]\n$mem" else ""))
         }
         blackboard.appendLine("Goal: $goal")
         repeat(maxSteps) {
             coroutineContext.ensureActive()
-            val reply = callModel(env, lead, messages, TOOLS, media, env.onStream)
+            val reply = callModel(env, lead, messages, tools, media, env.onStream)
             messages += reply.rawMessage
-            if (reply.toolCalls.isEmpty()) return reply.content.ifBlank { "(no answer)" }
+            if (reply.toolCalls.isEmpty()) {
+                val answer = reply.content.ifBlank { "(no answer)" }
+                skill?.let { os.saveOutput(it.name, goal, "# ${it.name}\n\n**Task:** $goal\n\n$answer\n") }
+                return answer
+            }
             if (reply.content.isNotBlank()) env.log(Step(StepKind.THOUGHT, settings.slot(lead).model, reply.content))
             val results = runCalls(reply.toolCalls)
             reply.toolCalls.zip(results).forEach { (c, r) -> messages += toolResult(c.id, r) }
@@ -89,10 +114,52 @@ class Agent(private val env: AgentEnv) {
         return "Stopped after $maxSteps steps without a final answer."
     }
 
+    /**
+     * Team pre-step, in parallel: the VISION model looks at an attached image, and the DECISION model
+     * drafts a plan for multi-step requests. Their output goes to the lead model as context.
+     */
+    private suspend fun teamBriefing(goal: String, image: String?): String = coroutineScope {
+        val vision = if (image != null) listOf(ModelRole.VISION, ModelRole.OMNI).firstOrNull { available(it) }?.let { r ->
+            async { "\n\n[${r.label} teammate sees the image]\n" + runCatching {
+                env.log(Step(StepKind.THOUGHT, settings.slot(r).model, "Looking at the image…"))
+                callModel(env, r, listOf(message("user", "Describe this image in detail for a teammate who cannot see it. Include any text.")), null, image, null).content
+            }.getOrElse { "(vision failed: ${it.message})" } }
+        } else null
+        val wantsPlan = settings.teamPlanning && goal.length > 40 && available(ModelRole.DECISION) && settings.primaryRole != ModelRole.DECISION
+        val plan = if (wantsPlan) async { runCatching {
+            env.log(Step(StepKind.THOUGHT, settings.slot(ModelRole.DECISION).model, "Planning…"))
+            "\n\n[Plan from the decision teammate]\n" + callModel(env, ModelRole.DECISION, listOf(message("user",
+                "Write a short numbered plan (max 5 steps) of tool actions for an agent to do this. Tools: web_search, web_fetch, " +
+                "open_app, phone_screen, phone_tap, shell, file_write, code_agent, schedule_task, mcp tools. Request: $goal")), null, null, null).content
+        }.getOrDefault("") } else null
+        (vision?.await().orEmpty()) + (plan?.await().orEmpty())
+    }
+
+    private suspend fun loadMcpTools(): List<JsonObject> = coroutineScope {
+        settings.mcpServers.map { s -> async {
+            mcpTools[s.name] ?: runCatching {
+                kotlinx.coroutines.withTimeout(8000) { mcp.getValue(s.name).listTools() }
+            }.getOrNull()?.let { list ->
+                (list as? JsonArray).orEmpty().take(40).mapNotNull { t ->
+                    val o = t as? JsonObject ?: return@mapNotNull null
+                    val name = o.str("name") ?: return@mapNotNull null
+                    buildJsonObject {
+                        put("type", "function")
+                        putJsonObject("function") {
+                            put("name", "mcp__${s.name}__$name".take(64))
+                            put("description", "[${s.name}] " + (o.str("description") ?: name).take(200))
+                            put("parameters", o["inputSchema"] ?: buildJsonObject { put("type", "object") })
+                        }
+                    }
+                }.also { mcpTools[s.name] = it }
+            }.orEmpty()
+        } }.awaitAll().flatten()
+    }
+
     /** Safe calls run in parallel (so several models can work at once); approval-gated calls run one by one. */
     private suspend fun runCalls(calls: List<ToolCall>): List<String> = coroutineScope {
         val parsed = calls.map { it to (runCatching { json.parseToJsonElement(it.argsJson).jsonObject }.getOrNull() ?: JsonObject(emptyMap())) }
-        val gated = parsed.map { (c, a) -> isSensitive(c.name, a, settings.askPhoneActions) }
+        val gated = parsed.map { (c, a) -> isSensitive(c.name, a, settings.askPhoneActions, settings.askLinux) }
         val out = arrayOfNulls<String>(calls.size)
         parsed.indices.filter { !gated[it] }.map { i -> async { i to safeExec(parsed[i].first, parsed[i].second) } }
             .awaitAll().forEach { (i, r) -> out[i] = r }
@@ -116,15 +183,21 @@ class Agent(private val env: AgentEnv) {
 
     private fun systemPrompt(): String = buildString {
         appendLine("You are Syntra, the AI core of Syntra OS on the user's Android phone — a capable, calm assistant like JARVIS.")
-        appendLine("You can operate the phone (phone_screen, phone_tap, open_app…), read notifications, schedule background tasks, run shell commands, browse the web, and use files.")
-        appendLine("Be an agent, not a chatbot: when a request needs information or an action, call tools yourself instead of telling the user to do it.")
-        appendLine("Examples: news/current facts → web_search then web_fetch; 'open X' → open_app; 'what's on screen' → phone_screen; code/files → shell.")
-        appendLine("You lead a team of on-device LFM models. Ask teammates with ask_specialist, or several at once with consult_team.")
-        appendLine("Answer in plain, natural sentences — never JSON or code unless the user asks for code. Keep answers short; they are spoken aloud.")
-        appendLine("To act, call a tool. Save important facts about the user and their projects with memory_remember.")
-        appendLine("External agents available via delegate: ${settings.providers.filter { it.agentModel.isNotBlank() }.joinToString { it.id }}.")
-        appendLine("MCP servers: ${settings.mcpServers.joinToString { it.name }.ifBlank { "none" }}.")
-        env.skills.filter { it.enabled }.forEach { appendLine("\n## Skill: ${it.name}\n${it.prompt.take(2000)}") }
+        appendLine("Be an agent, not a chatbot: when a request needs information or an action, call tools yourself. Never tell the user to do something a tool can do.")
+        appendLine("Examples: news/facts → web_search then web_fetch or scrape; 'open X' → open_app; screen → phone_screen; code/apps/files → shell or code_agent; " +
+            "YouTube/Instagram/Gmail/Sheets/other apps online → the zapier mcp__ tools; repeat later → schedule_task; user corrects you → learn.")
+        appendLine("Your shell is a real Ubuntu Linux (apt, python, git). The agentic-os folder (context, memory, outputs) is at /root/agentic-os.")
+        appendLine("Team: ask_specialist / consult_team reach the other LFM models (vision, audio, omni, decision); several run in parallel.")
+        appendLine("Answer in plain, natural sentences — never raw JSON or tool markup. Keep answers short; they may be spoken aloud.")
+        if (code) {
+            appendLine("\n## CODE MODE (harness)")
+            appendLine("You are a coding agent like Claude Code. Work in /root/projects inside Ubuntu. Loop: todo (plan) → read files (shell cat/ls) → " +
+                "write files (shell with heredoc, or code_agent for multi-file edits) → run/test with shell → fix errors → repeat until it works. " +
+                "Report what you built and how to run it.")
+        }
+        append(os.context())
+        val skills = skill?.let { listOf(it) } ?: env.skills.filter { it.enabled }
+        skills.forEach { appendLine("\n## Skill: ${it.name}\n${it.prompt.take(2500)}") }
     }
 
     private suspend fun execute(name: String, a: JsonObject): String = when (name) {
@@ -166,7 +239,8 @@ class Agent(private val env: AgentEnv) {
         "open_app" -> withContext(Dispatchers.Main) { Phone.openApp(env.context, a.str("name").orEmpty()) }
         "list_apps" -> Phone.listApps(env.context)
         "shell" -> if (com.syntra.os.device.Linux.installed(env.context)) com.syntra.os.device.Linux.run(env.context, a.str("command").orEmpty())
-            else Termux.run(env.context, a.str("command").orEmpty())
+            else if (settings.askLinux) Termux.run(env.context, a.str("command").orEmpty()) // approved above; Termux is outside the sandbox
+            else error("Install Ubuntu in the Linux tab (Termux commands need approval, so turn on 'Ask before Linux commands')")
         "web_search" -> webSearch(a.str("query").orEmpty())
         "file_list" -> safeFile(a.str("path") ?: ".").listFiles().orEmpty()
             .joinToString("\n") { (if (it.isDirectory) "dir  " else "file ") + it.name + " " + it.length() }.ifBlank { "(empty)" }
@@ -178,6 +252,29 @@ class Agent(private val env: AgentEnv) {
         "list_schedules" -> withContext(Dispatchers.IO) { Scheduler.list(env.context) }
             .joinToString("\n") { (id, g) -> "$id: $g" }.ifBlank { "Nothing scheduled." }
         "cancel_schedule" -> Scheduler.cancel(env.context, a.str("id").orEmpty())
+        "learn" -> os.learn(a.str("rule").orEmpty())
+        "save_output" -> os.saveOutput(a.str("folder") ?: skill?.name ?: "general", a.str("title") ?: "output", a.str("content").orEmpty())
+        "todo" -> "Plan noted:\n" + a.str("items").orEmpty()
+        "scrape" -> scrape(a.str("url").orEmpty(), a.str("selector"))
+        "http_request" -> {
+            val url = a.str("url").orEmpty()
+            require(url.startsWith("https://") || url.startsWith("http://")) { "http(s) URL required" }
+            val r = httpCall(url, (a.str("method") ?: "GET").uppercase(), a["body"], mapOf("Content-Type" to "application/json"))
+            "HTTP ${r.code}\n${r.body.take(4000)}"
+        }
+        "hermes_agent" -> {
+            check(com.syntra.os.device.Linux.installed(env.context)) { "Install Ubuntu, then Hermes, in the Linux tab" }
+            com.syntra.os.device.Linux.run(env.context, "command -v hermes >/dev/null || { echo 'Hermes not installed (Linux tab → Hermes Agent)'; exit 1; }; " +
+                "hermes -q ${shQuote(a.str("task").orEmpty())} -Q", timeoutMs = 900_000)
+        }
+        "code_agent" -> {
+            check(com.syntra.os.device.Linux.installed(env.context)) { "Install Ubuntu in the Linux tab first" }
+            val dir = "/root/projects/" + AgenticOs.slug(a.str("project") ?: "app").ifBlank { "app" }
+            com.syntra.os.device.Linux.run(env.context, "mkdir -p $dir && cd $dir && (git init -q 2>/dev/null || true); " +
+                "command -v aider >/dev/null || { echo 'Aider not installed (Linux tab → Aider). Use shell to write files instead.'; exit 1; }; " +
+                "aider --model openai/syntra --yes-always --no-show-model-warnings --no-check-update --message ${shQuote(a.str("task").orEmpty())} 2>&1 | tail -60",
+                timeoutMs = 1_200_000)
+        }
         "github" -> github(a)
         "delegate" -> delegate(a.str("agent").orEmpty(), a.str("task").orEmpty())
         "mcp_list_tools" -> (mcp[a.str("server")] ?: error("no MCP server ${a.str("server")}")).listTools().toString()
@@ -185,7 +282,11 @@ class Agent(private val env: AgentEnv) {
             val client = mcp[a.str("server")] ?: error("no MCP server ${a.str("server")}")
             client.callTool(a.str("tool").orEmpty(), a["arguments"] as? JsonObject ?: JsonObject(emptyMap())).toString()
         }
-        else -> "Unknown tool $name"
+        else -> if (name.startsWith("mcp__")) {
+            val server = name.removePrefix("mcp__").substringBefore("__")
+            val tool = name.removePrefix("mcp__${server}__")
+            (mcp[server] ?: error("no MCP server $server")).callTool(tool, a).toString()
+        } else "Unknown tool $name"
     }
 
     /** Workspace paths can't escape the sandbox folder. */
@@ -206,6 +307,27 @@ class Agent(private val env: AgentEnv) {
             Regex("uddg=([^&]+)").find(href)?.let { href = java.net.URLDecoder.decode(it.groupValues[1], "UTF-8") }
             "${i + 1}. ${a?.text().orEmpty()}\n   $href\n   ${r.selectFirst(".result__snippet")?.text().orEmpty().take(220)}"
         }.joinToString("\n").ifBlank { "No results." }
+    }
+
+    private fun shQuote(s: String) = "'" + s.replace("'", "'\\''") + "'"
+
+    /** Scrapling (installed in Ubuntu) for robust extraction; Jsoup with a CSS selector otherwise. */
+    private suspend fun scrape(url: String, selector: String?): String {
+        require(url.startsWith("http://") || url.startsWith("https://")) { "http(s) URL required" }
+        val linux = com.syntra.os.device.Linux
+        if (linux.installed(env.context)) {
+            val py = "from scrapling.fetchers import Fetcher\nimport sys\np=Fetcher.get(sys.argv[1], stealthy_headers=True)\n" +
+                "sel=sys.argv[2] if len(sys.argv)>2 else ''\n" +
+                "items=p.css(sel) if sel else [p]\n" +
+                "print('\\n'.join((i.get_all_text(separator=' ', strip=True) or '')[:1500] for i in items[:30]))"
+            val r = linux.run(env.context, "python3 -c 'import scrapling' 2>/dev/null && python3 - ${shQuote(url)} ${shQuote(selector.orEmpty())} <<'PY'\n$py\nPY", 120_000)
+            if (r.startsWith("exit 0")) return "Scrapling:\n" + r.substringAfter('\n').take(6000)
+        }
+        return withContext(Dispatchers.IO) {
+            val doc = Jsoup.connect(url).userAgent("Mozilla/5.0 (Linux; Android) SyntraOS").timeout(20_000).get()
+            val els = if (selector.isNullOrBlank()) listOf(doc.body()) else doc.select(selector)
+            els.take(30).joinToString("\n") { it.text().take(1500) }.ifBlank { "Nothing matched." }
+        }
     }
 
     private suspend fun webFetch(url: String): String = withContext(Dispatchers.IO) {
@@ -235,7 +357,10 @@ class Agent(private val env: AgentEnv) {
     }
 
     private suspend fun askSpecialist(roleName: String, question: String): String {
-        val role = ModelRole.entries.firstOrNull { it.name.equals(roleName, true) } ?: error("unknown role $roleName")
+        val asked = ModelRole.entries.firstOrNull { it.name.equals(roleName, true) } ?: error("unknown role $roleName")
+        // If that teammate isn't downloaded, the nearest available one answers instead of failing the task.
+        val role = asked.takeIf { available(it) } ?: listOf(ModelRole.OMNI, ModelRole.DECISION, ModelRole.TEXT, ModelRole.VISION)
+            .firstOrNull { available(it) } ?: error("no teammate model is available — download one in Setup")
         val slot = settings.slot(role)
         val board = synchronized(blackboard) { blackboard.toString().takeLast(2000) }
         val sys = "You are the ${role.label} specialist (${slot.model}) on the Syntra OS model team. Answer the lead model precisely and briefly." +
@@ -265,7 +390,7 @@ Use "Me" for the user.
 
 User: $userText
 Assistant: ${answer.take(800)}"""
-    val reply = callModel(env, env.settings.primaryRole, listOf(message("user", prompt)), null, null, null).content
+    val reply = callModel(env, env.settings.primaryRole, listOf(message("user", prompt)), null, null, null, background = true).content
     val start = reply.indexOf('{'); val end = reply.lastIndexOf('}')
     if (start < 0 || end <= start) return
     val o = runCatching { json.parseToJsonElement(com.syntra.os.local.LfmPrompt.lenient(reply.substring(start, end + 1))).jsonObject }.getOrNull() ?: return

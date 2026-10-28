@@ -35,11 +35,15 @@ private fun tool(name: String, desc: String, required: List<String>, props: Map<
 
 val PHONE_TOOLS = setOf("phone_tap", "phone_type", "phone_swipe", "phone_action", "open_app")
 /** Always need a human tap: they reach outside the phone or run arbitrary code. */
-val ALWAYS_ASK = setOf("mcp_call", "shell", "delegate")
+val ALWAYS_ASK = setOf("mcp_call", "delegate")
 
-fun isSensitive(name: String, args: JsonObject, askPhone: Boolean): Boolean =
-    name in ALWAYS_ASK || (askPhone && name in PHONE_TOOLS) ||
-        (name == "github" && (args.str("method") ?: "GET").uppercase() != "GET")
+/** Commands inside the app's own Ubuntu sandbox; the user can let these run without asking. */
+val LINUX_TOOLS = setOf("shell", "code_agent", "hermes_agent")
+
+fun isSensitive(name: String, args: JsonObject, askPhone: Boolean, askLinux: Boolean = true): Boolean =
+    name in ALWAYS_ASK || (askLinux && name in LINUX_TOOLS) ||
+        (askPhone && name in PHONE_TOOLS) || name.startsWith("mcp__") ||
+        ((name == "github" || name == "http_request") && (args.str("method") ?: "GET").uppercase() != "GET")
 
 val TOOLS: JsonArray = buildJsonArray {
     add(tool("memory_search", "Search the shared knowledge graph for entities, projects, people or story facts.",
@@ -77,6 +81,19 @@ val TOOLS: JsonArray = buildJsonArray {
         listOf("goal", "in_minutes"), mapOf("goal" to "What to do", "in_minutes" to "Delay in minutes", "repeat_hours" to "Repeat every N hours, optional")))
     add(tool("list_schedules", "List scheduled background tasks.", emptyList(), emptyMap()))
     add(tool("cancel_schedule", "Cancel a scheduled task by id.", listOf("id"), mapOf("id" to "Job id from list_schedules")))
+    add(tool("scrape", "Extract text from a web page with Scrapling (CSS selector optional), for research and structured data.",
+        listOf("url"), mapOf("url" to "http(s) URL", "selector" to "CSS selector, e.g. h2 a or .price")))
+    add(tool("http_request", "Call a URL/webhook (e.g. a Zapier Catch Hook). Non-GET asks the user first.",
+        listOf("url"), mapOf("method" to "GET|POST|PUT", "url" to "URL", "body" to "JSON body")))
+    add(tool("learn", "Remember a rule from the user's correction or preference (agentic-os memory/learnings.md).",
+        listOf("rule"), mapOf("rule" to "The rule, e.g. Always reply in Hindi when I write in Hindi")))
+    add(tool("save_output", "Save a finished result to agentic-os/outputs/<folder>.", listOf("title", "content"),
+        mapOf("folder" to "Folder, e.g. linkedin", "title" to "Short title", "content" to "Markdown content")))
+    add(tool("todo", "Write or update your step-by-step plan for a multi-step task.", listOf("items"), mapOf("items" to "Numbered steps, mark done with [x]")))
+    add(tool("code_agent", "Multi-file coding in Ubuntu with Aider: creates/edits files in /root/projects/<project>.",
+        listOf("task"), mapOf("project" to "Project folder name", "task" to "What to build or change")))
+    add(tool("hermes_agent", "Hand a long, multi-step task to Hermes Agent running in Ubuntu (uses Syntra's models).",
+        listOf("task"), mapOf("task" to "Complete task description")))
     add(tool("mcp_list_tools", "List tools on a connected MCP server.", listOf("server"), mapOf("server" to "Server name")))
     add(tool("mcp_call", "Call a tool on a connected MCP server.", listOf("server", "tool"),
         mapOf("server" to "Server name", "tool" to "Tool name", "arguments" to "Tool arguments object")))
