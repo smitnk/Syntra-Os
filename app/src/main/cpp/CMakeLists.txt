@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
+# Always optimize: a Debug (-O0) ggml is 10-50x slower, which is what made v0.3 take minutes per reply.
+set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG" CACHE STRING "" FORCE)
 project(syntra_llm C CXX)
 
 include(FetchContent)

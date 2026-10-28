@@ -71,9 +71,28 @@ class LocalTest {
         assertEquals(0, com.syntra.os.local.LfmPrompt.parse("Hello Sumit").toolCalls.size)
     }
 
-    @Test fun rendersChatMl() {
-        val p = com.syntra.os.local.LfmPrompt.render(listOf(com.syntra.os.core.message("user", "hi")), null, "<__media__>")
-        assertEquals("<|im_start|>user\n<__media__>\nhi<|im_end|>\n<|im_start|>assistant\n", p)
+    @Test fun rendersLfm3() {
+        val p = com.syntra.os.local.LfmPrompt.render(listOf(com.syntra.os.core.message("system", "S"),
+            com.syntra.os.core.message("user", "hi")), null, "<__media__>")
+        assertEquals("<|im_start|>system\nS<|im_end|>\n<|im_start|>user\n<__media__>\nhi<|im_end|>\n<|im_start|>assistant\n<think></think>", p.text)
+        assertEquals("<|im_start|>system\nS<|im_end|>\n".length, p.stableBytes)
+    }
+
+    @Test fun parsesNativeLfm3Call() {
+        val r = com.syntra.os.local.LfmPrompt.parse("<tool_call>\n<function=open_app>\n<parameter=name>\nYouTube\n</parameter>\n</function>\n</tool_call>")
+        assertEquals("open_app", r.toolCalls.single().name)
+        assertEquals("""{"name":"YouTube"}""", r.toolCalls.single().argsJson)
+        assertEquals("", r.content)
+    }
+
+    @Test fun parsesTagNameThenJson() { // exact output from the v0.3 screenshot
+        val r = com.syntra.os.local.LfmPrompt.parse("<tool>open_app</tool>\n{\n  \"name\": \"YouTube\"\n  \"arguments\": {}\n}")
+        assertEquals("open_app", r.toolCalls.single().name)
+        assertEquals("""{"name":"YouTube"}""", r.toolCalls.single().argsJson)
+    }
+
+    @Test fun stripsThinking() {
+        assertEquals("Hi", com.syntra.os.local.LfmPrompt.parse("<think>hmm</think>Hi").content)
     }
 
     @Test fun picksPhoneQuantAndProjector() {

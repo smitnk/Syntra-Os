@@ -70,7 +70,11 @@ class Agent(private val env: AgentEnv) {
         val lead = settings.primaryRole
         val messages = mutableListOf(message("system", systemPrompt())).apply {
             addAll(history.takeLast(10))
-            add(message("user", if (image != null) "$goal\n(An image is attached; the VISION teammate can see it.)" else goal))
+            // Memory goes with the newest user turn, so the system prompt (cached on-device) never changes.
+            val mem = env.graph().let { g -> (g.search(goal).take(8).map { it.label } + g.nodes.takeLast(8).map { it.label }).distinct() }
+                .mapNotNull { env.graph().find(it) }.joinToString("\n") { "- ${it.label} [${it.type}] ${it.notes.take(120)}" }
+            val note = if (image != null) "\n(An image is attached; the VISION teammate can see it.)" else ""
+            add(message("user", goal + note + if (mem.isNotBlank()) "\n\n[What you remember]\n$mem" else ""))
         }
         blackboard.appendLine("Goal: $goal")
         repeat(maxSteps) {
@@ -114,12 +118,11 @@ class Agent(private val env: AgentEnv) {
         appendLine("You are Syntra, the AI core of Syntra OS on the user's Android phone — a capable, calm assistant like JARVIS.")
         appendLine("You can operate the phone (phone_screen, phone_tap, open_app…), read notifications, schedule background tasks, run shell commands, browse the web, and use files.")
         appendLine("You lead a team of on-device LFM models. Ask teammates with ask_specialist, or several at once with consult_team.")
-        appendLine("Keep spoken answers short and natural. Save important facts about the user and their projects with memory_remember.")
+        appendLine("Answer in plain, natural sentences — never JSON or code unless the user asks for code. Keep answers short; they are spoken aloud.")
+        appendLine("To act, call a tool. Save important facts about the user and their projects with memory_remember.")
         appendLine("External agents available via delegate: ${settings.providers.filter { it.agentModel.isNotBlank() }.joinToString { it.id }}.")
         appendLine("MCP servers: ${settings.mcpServers.joinToString { it.name }.ifBlank { "none" }}.")
         env.skills.filter { it.enabled }.forEach { appendLine("\n## Skill: ${it.name}\n${it.prompt.take(2000)}") }
-        val mem = env.graph().describe(30)
-        if (mem.isNotBlank()) appendLine("\n## What you remember\n$mem")
     }
 
     private suspend fun execute(name: String, a: JsonObject): String = when (name) {

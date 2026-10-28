@@ -38,6 +38,8 @@ class VoiceLoop(
     private var awake = false // true: next utterance is a command (after wake word or reply)
     private var speaking = false
     var wakeWords: List<String> = listOf("syntra", "jarvis")
+    /** Mic loudness 0..1, drives the orb. */
+    var onLevel: (Float) -> Unit = {}
 
     init {
         tts = TextToSpeech(ctx) { status ->
@@ -99,7 +101,7 @@ class VoiceLoop(
     private val listener = object : RecognitionListener {
         override fun onReadyForSpeech(p: Bundle?) {}
         override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rms: Float) {}
+        override fun onRmsChanged(rms: Float) { onLevel(((rms + 2f) / 12f).coerceIn(0f, 1f)) }
         override fun onBufferReceived(b: ByteArray?) {}
         override fun onEndOfSpeech() {}
         override fun onEvent(t: Int, p: Bundle?) {}

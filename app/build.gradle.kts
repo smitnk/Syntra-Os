@@ -12,8 +12,8 @@ android {
         applicationId = "com.syntra.os"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild { cmake { arguments += listOf("-DCMAKE_BUILD_TYPE=Release") } }
     }
@@ -32,7 +32,8 @@ android {
     flavorDimensions += "edition"
     productFlavors {
         // Full: phone control (accessibility) + notification reading. Play Protect warns about these.
-        create("full") { dimension = "edition" }
+        // Own app id: an old v0.2 "com.syntra.os" signed with a different key made Android reject the Full APK.
+        create("full") { dimension = "edition"; applicationIdSuffix = ".full" }
         // Lite: no accessibility/notification services, so it installs without the "sensitive data" block.
         create("lite") { dimension = "edition"; applicationIdSuffix = ".lite"; versionNameSuffix = "-lite" }
     }

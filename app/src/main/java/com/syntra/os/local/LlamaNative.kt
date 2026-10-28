@@ -10,5 +10,5 @@ object LlamaNative {
     @JvmStatic external fun marker(): String
     @JvmStatic external fun stop(handle: Long)
     @JvmStatic external fun free(handle: Long)
-    @JvmStatic external fun generate(handle: Long, prompt: String, media: String?, maxTokens: Int, cb: PieceCallback?): ByteArray
+    @JvmStatic external fun generate(handle: Long, prompt: String, media: String?, maxTokens: Int, cb: PieceCallback?, stableChars: Int): ByteArray
 }

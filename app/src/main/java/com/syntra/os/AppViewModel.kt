@@ -51,6 +51,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var attachment by mutableStateOf<String?>(null)
     var voiceState by mutableStateOf(VoiceState.OFF)
     var heard by mutableStateOf("")
+    var micLevel by mutableStateOf(0f)
     /** Set after an answer arrives so the activity can speak it. */
     var lastAnswer by mutableStateOf<String?>(null)
     val downloads = mutableStateMapOf<ModelRole, String>()
@@ -60,6 +61,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var approval: CompletableDeferred<Boolean>? = null
 
     init {
+        java.io.File(app.filesDir, "crash.txt").takeIf { it.exists() }?.let { f ->
+            chat = listOf(Step(StepKind.ERROR, "system", "Syntra crashed last time:\n" + f.readText().lines().take(6).joinToString("\n")))
+            f.delete()
+        }
         // Light up the model-team row while engines generate.
         viewModelScope.launch { while (isActive) { activeRoles = engines.active; delay(150) } }
     }

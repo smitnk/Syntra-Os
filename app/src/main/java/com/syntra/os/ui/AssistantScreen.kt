@@ -61,6 +61,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -79,28 +83,64 @@ private fun reducedMotion(): Boolean {
     return remember { SysSettings.Global.getFloat(ctx.contentResolver, SysSettings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
 }
 
-/** The presence orb. Breathes when idle, spins up while listening, thinking or speaking. */
+/**
+ * The presence orb: glowing core, rotating sweep ring, counter-rotating dashed ring, orbiting sparks,
+ * and a circular waveform that reacts to your voice ([level]) and to how hard Syntra is working ([energy]).
+ */
 @Composable
-fun Orb(energy: Float, modifier: Modifier = Modifier) {
+fun Orb(energy: Float, modifier: Modifier = Modifier, level: Float = 0f) {
     val still = reducedMotion()
     val t = rememberInfiniteTransition(label = "orb")
-    val spin by t.animateFloat(0f, 360f, infiniteRepeatable(tween((12000 / (1 + energy * 4)).toInt(), easing = LinearEasing)), label = "spin")
-    val breath by t.animateFloat(0.9f, 1f, infiniteRepeatable(tween(1800), RepeatMode.Reverse), label = "breath")
-    val s = if (still) 0f else spin
-    val b = if (still) 1f else breath
+    val phase by t.animateFloat(0f, 1f, infiniteRepeatable(tween(9000, easing = LinearEasing)), label = "phase")
+    val breath by t.animateFloat(0f, 1f, infiniteRepeatable(tween(2200), RepeatMode.Reverse), label = "breath")
+    val p = if (still) 0f else phase
+    val br = if (still) 0.5f else breath
+    val e = (energy + level * 0.8f).coerceIn(0f, 1.4f)
     Canvas(modifier.semantics { contentDescription = "Syntra presence" }) {
         val r = size.minDimension / 2
-        drawCircle(Brush.radialGradient(listOf(Clay.copy(alpha = 0.35f + energy * 0.25f), Clay.copy(alpha = 0.06f), Color.Transparent), center, r * b), r * b)
-        listOf(0.92f, 0.74f, 0.56f).forEachIndexed { i, k ->
-            val rr = r * k
-            drawArc(
-                color = (if (i == 1) ClaySoft else Clay).copy(alpha = 0.9f - i * 0.22f),
-                startAngle = s * (if (i % 2 == 0) 1f else -1.4f) + i * 60f, sweepAngle = 70f + 90f * (1 - i * 0.3f) + energy * 60f,
-                useCenter = false, topLeft = center.copy(center.x - rr, center.y - rr), size = Size(rr * 2, rr * 2),
-                style = Stroke((2.5f - i * 0.5f).dp.toPx()),
-            )
+        val c = center
+        val turn = p * 360f * (1f + e)
+        // halo
+        drawCircle(Brush.radialGradient(listOf(Clay.copy(alpha = 0.28f + 0.25f * e), Clay.copy(alpha = 0.05f), Color.Transparent),
+            c, r * (0.95f + 0.05f * br)), r)
+        // waveform ring
+        val bars = 72
+        val base = r * 0.62f
+        for (i in 0 until bars) {
+            val ang = Math.toRadians((i * 360.0 / bars) + turn * 0.25)
+            val wob = (kotlin.math.sin(i * 0.9 + p * 40) * 0.5 + kotlin.math.sin(i * 0.37 - p * 23) * 0.5).toFloat()
+            val len = r * (0.025f + (0.05f + 0.16f * e) * (0.5f + 0.5f * wob))
+            val cx = kotlin.math.cos(ang).toFloat(); val cy = kotlin.math.sin(ang).toFloat()
+            drawLine(ClaySoft.copy(alpha = 0.35f + 0.5f * e.coerceAtMost(1f)),
+                Offset(c.x + cx * base, c.y + cy * base), Offset(c.x + cx * (base + len), c.y + cy * (base + len)),
+                strokeWidth = 1.6.dp.toPx(), cap = StrokeCap.Round)
         }
-        drawCircle(Brush.radialGradient(listOf(ClaySoft, Clay, ClayDeep), center, r * 0.24f), r * 0.2f * b)
+        // sweep ring
+        val rr = r * 0.9f
+        rotate(turn, c) {
+            drawCircle(Brush.sweepGradient(listOf(Color.Transparent, Clay.copy(alpha = 0.2f), Clay, ClaySoft, Color.Transparent), c),
+                rr, c, style = Stroke(2.4.dp.toPx(), cap = StrokeCap.Round))
+        }
+        // dashed counter ring
+        rotate(-turn * 0.6f, c) {
+            drawCircle(Clay.copy(alpha = 0.45f), r * 0.78f, c,
+                style = Stroke(1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 9.dp.toPx()))))
+        }
+        // orbiting sparks
+        repeat(3) { k ->
+            val ang = Math.toRadians((turn * (1.2 + k * 0.35) + k * 120).toDouble())
+            val orbit = r * (0.84f - k * 0.05f)
+            val sp = Offset(c.x + kotlin.math.cos(ang).toFloat() * orbit, c.y + kotlin.math.sin(ang).toFloat() * orbit)
+            drawCircle(Brush.radialGradient(listOf(ClaySoft, Clay.copy(alpha = 0f)), sp, 7.dp.toPx()), 7.dp.toPx(), sp)
+            drawCircle(Color.White.copy(alpha = 0.9f), 1.6.dp.toPx(), sp)
+        }
+        // core sphere with highlight
+        val core = r * (0.36f + 0.05f * br + 0.08f * level)
+        drawCircle(Brush.radialGradient(listOf(Clay.copy(alpha = 0.55f), Color.Transparent), c, core * 1.6f), core * 1.6f, c)
+        drawCircle(Brush.radialGradient(listOf(ClaySoft, Clay, ClayDeep, Color(0xFF5A2A1A)),
+            Offset(c.x - core * 0.3f, c.y - core * 0.35f), core * 1.25f), core, c)
+        drawCircle(Brush.radialGradient(listOf(Color.White.copy(alpha = 0.55f), Color.Transparent),
+            Offset(c.x - core * 0.35f, c.y - core * 0.4f), core * 0.45f), core * 0.45f, Offset(c.x - core * 0.35f, c.y - core * 0.4f))
     }
 }
 
@@ -123,22 +163,25 @@ private fun TeamRow(active: Set<ModelRole>, busy: Boolean) {
 }
 
 @Composable
-private fun VoicePill(state: VoiceState, words: String, onClick: () -> Unit) {
-    val (dot, text) = when (state) {
-        VoiceState.OFF -> Dim to "Voice off"
-        VoiceState.WAITING_WAKE -> Ok to "Say \"${words.split(',').first().trim().replaceFirstChar { it.uppercase() }}\""
-        VoiceState.LISTENING -> Clay to "Listening…"
-        VoiceState.SPEAKING -> ClaySoft to "Speaking"
-    }
-    Row(Modifier.background(Raised, RoundedCornerShape(50)).clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(8.dp).background(dot, CircleShape)); Spacer(Modifier.width(7.dp))
-        Text(text, fontSize = 12.sp, color = Ink)
+private fun ModeSwitch(voiceOn: Boolean, state: VoiceState, onChange: (Boolean) -> Unit) {
+    Row(Modifier.background(Raised, RoundedCornerShape(50)).padding(3.dp), verticalAlignment = Alignment.CenterVertically) {
+        listOf(false to "Chat", true to "Voice").forEach { (v, label) ->
+            val sel = voiceOn == v
+            Row(Modifier.background(if (sel) Clay else Color.Transparent, RoundedCornerShape(50)).clickable { onChange(v) }
+                .padding(horizontal = 14.dp, vertical = 7.dp).semantics { contentDescription = "$label mode" },
+                verticalAlignment = Alignment.CenterVertically) {
+                if (v && sel) {
+                    Box(Modifier.size(7.dp).background(if (state == VoiceState.LISTENING) Bg else Bg.copy(alpha = 0.5f), CircleShape))
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = if (sel) Bg else Dim)
+            }
+        }
     }
 }
 
 @Composable
-fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: () -> Unit, onAttach: () -> Unit, modifier: Modifier = Modifier) {
+fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean) -> Unit, onAttach: () -> Unit, modifier: Modifier = Modifier) {
     var input by remember { mutableStateOf("") }
     val list = rememberLazyListState()
     val count = vm.chat.size + if (vm.busy) 1 else 0
@@ -149,16 +192,20 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: () -> Un
     Column(modifier.fillMaxSize().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Syntra", style = MaterialTheme.typography.headlineSmall, color = Ink, modifier = Modifier.weight(1f))
-            VoicePill(vm.voiceState, vm.settings.wakeWords, onToggleVoice)
+            ModeSwitch(vm.settings.alwaysListening, vm.voiceState, onToggleVoice)
             IconButton(vm::clearChat) { Icon(Icons.Outlined.DeleteSweep, "Clear conversation", tint = Dim) }
         }
 
         if (empty) {
             Column(Modifier.weight(1f).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Orb(energy, Modifier.size(200.dp))
+                Orb(energy, Modifier.size(240.dp), vm.micLevel)
                 Spacer(Modifier.height(20.dp))
                 Text(vm.heard.ifBlank { "Good to see you." }, style = MaterialTheme.typography.titleMedium, color = Ink)
-                Text("Speak any time, or type below.", color = Dim, fontSize = 13.sp)
+                Text(when {
+                    !vm.settings.alwaysListening -> "Chat mode — type below. Switch to Voice to talk."
+                    vm.voiceState == VoiceState.LISTENING -> "Listening…"
+                    else -> "Say \"${vm.settings.wakeWords.split(',').first().trim().replaceFirstChar { it.uppercase() }}\" or type below."
+                }, color = Dim, fontSize = 13.sp)
                 Spacer(Modifier.height(28.dp))
                 TeamRow(vm.activeRoles, false)
                 Spacer(Modifier.height(24.dp))
@@ -171,7 +218,7 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: () -> Un
             }
         } else {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Orb(energy, Modifier.size(40.dp)); Spacer(Modifier.width(10.dp))
+                Orb(energy, Modifier.size(52.dp), vm.micLevel); Spacer(Modifier.width(10.dp))
                 Box(Modifier.weight(1f)) { TeamRow(vm.activeRoles, vm.busy) }
             }
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),

@@ -70,10 +70,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching { File(filesDir, "crash.txt").writeText(e.stackTraceToString().take(4000)) }
+            previous?.uncaughtException(t, e)
+        }
         enableEdgeToEdge()
         voice = VoiceLoop(this,
-            onCommand = { vm.heard = ""; vm.send(it) },
+            onCommand = { vm.heard = ""; vm.send(it); if (!vm.settings.alwaysListening) voice.stop() }, // chat mode: push-to-talk only
             onState = { s, heard -> vm.voiceState = s; if (s == VoiceState.LISTENING) vm.heard = heard else if (heard.isEmpty() && s != VoiceState.WAITING_WAKE) vm.heard = "" })
+        voice.onLevel = { vm.micLevel = it }
         setContent {
             SyntraTheme {
                 var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -104,10 +110,9 @@ class MainActivity : ComponentActivity() {
                     val m = Modifier.padding(pad)
                     when (tab) {
                         0 -> AssistantScreen(vm, onMic = { voice.shutUp(); if (hasMic()) voice.wake() else micPermission.launch(Manifest.permission.RECORD_AUDIO) },
-                            onToggleVoice = {
-                                val on = !vm.settings.alwaysListening
-                                vm.updateSettings(vm.settings.copy(alwaysListening = on))
-                                if (on) startVoice() else voice.stop()
+                            onToggleVoice = { on ->
+                                vm.updateSettings(vm.settings.copy(alwaysListening = on, speakReplies = on))
+                                if (on) startVoice() else { voice.stop(); voice.shutUp() }
                             },
                             onAttach = { pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                             modifier = m)

@@ -1,5 +1,6 @@
 // JNI bridge: one Engine per loaded GGUF model, so several LFM models can run at the same time.
 #include <jni.h>
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -15,6 +16,9 @@ struct Engine {
     mtmd_context *mtmd = nullptr;
     int n_batch = 512;
     std::atomic<bool> stop{false};
+    std::vector<llama_token> cached; // tokens currently in the KV cache (prompt + generated)
+    std::vector<llama_token> cp_toks; // checkpoint: stable prompt prefix (system prompt)...
+    std::vector<uint8_t> cp_state;   // ...and the saved model state right after it
 };
 
 static std::once_flag g_backend;
@@ -82,21 +86,23 @@ Java_com_syntra_os_local_LlamaNative_free(JNIEnv *, jclass, jlong h) {
     delete e;
 }
 
-// Stateless generation: clears the KV cache and evaluates the full prompt every call.
-// shortcut: no prompt-cache reuse across turns; add KV prefix reuse if long chats feel slow.
+// Reuses the KV cache when the new prompt extends the previous one (the normal agent loop),
+// so each step only evaluates the new tokens instead of the whole conversation.
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_syntra_os_local_LlamaNative_generate(JNIEnv *env, jclass, jlong h, jstring jprompt, jstring jmedia,
-                                              jint max_tokens, jobject callback) {
+                                              jint max_tokens, jobject callback, jint stable_chars) {
     auto *e = reinterpret_cast<Engine *>(h);
     e->stop = false;
     const std::string prompt = jstr(env, jprompt);
     const std::string media = jstr(env, jmedia);
     const int n_ctx = (int) llama_n_ctx(e->ctx);
-    llama_memory_clear(llama_get_memory(e->ctx), true);
+    llama_memory_t mem = llama_get_memory(e->ctx);
     llama_pos n_past = 0;
 
     if (!media.empty()) {
         if (!e->mtmd) { throw_rt(env, "this model has no vision/audio projector loaded"); return nullptr; }
+        llama_memory_clear(mem, true);
+        e->cached.clear();
         auto w = mtmd_helper_bitmap_init_from_file(e->mtmd, media.c_str(), false, mtmd_helper_init_opt_default());
         if (!w.bitmap) { throw_rt(env, "could not read media file"); return nullptr; }
         mtmd_input_text txt{prompt.c_str(), prompt.size(), true, true};
@@ -115,11 +121,50 @@ Java_com_syntra_os_local_LlamaNative_generate(JNIEnv *env, jclass, jlong h, jstr
             throw_rt(env, "tokenize failed"); return nullptr;
         }
         if (n + max_tokens > n_ctx) { throw_rt(env, "prompt too long for context"); return nullptr; }
-        for (int i = 0; i < n; i += e->n_batch) {
-            int m = std::min(e->n_batch, n - i);
-            if (llama_decode(e->ctx, llama_batch_get_one(toks.data() + i, m)) != 0) { throw_rt(env, "decode failed"); return nullptr; }
+        size_t keep = 0;
+        while (keep < e->cached.size() && keep < toks.size() && e->cached[keep] == toks[keep]) keep++;
+        if (keep == toks.size() && keep > 0) keep--; // always re-evaluate at least one token to get fresh logits
+        if (keep == 0 || !llama_memory_seq_rm(mem, 0, (llama_pos) keep, -1)) {
+            // Recurrent/hybrid layers (LFM) can't drop a middle span: restore the system-prompt checkpoint instead.
+            llama_memory_clear(mem, true);
+            keep = 0;
+            bool cp_ok = !e->cp_toks.empty() && e->cp_toks.size() < toks.size() &&
+                         std::equal(e->cp_toks.begin(), e->cp_toks.end(), toks.begin());
+            if (cp_ok && llama_state_seq_set_data(e->ctx, e->cp_state.data(), e->cp_state.size(), 0) > 0) keep = e->cp_toks.size();
+            else llama_memory_clear(mem, true);
         }
-        n_past = n;
+        e->cached.assign(toks.begin(), toks.begin() + keep);
+
+        // Token count of the stable prefix, so we can checkpoint right after it.
+        size_t n_cp = 0;
+        if (stable_chars > 0 && stable_chars < (int) prompt.size()) {
+            int np = -llama_tokenize(e->vocab, prompt.c_str(), stable_chars, nullptr, 0, true, true);
+            std::vector<llama_token> pre(std::max(np, 0));
+            if (np > 0 && llama_tokenize(e->vocab, prompt.c_str(), stable_chars, pre.data(), np, true, true) == np &&
+                pre.size() <= toks.size() && std::equal(pre.begin(), pre.end(), toks.begin())) n_cp = pre.size();
+        }
+        bool want_cp = n_cp > keep && !(e->cp_toks.size() == n_cp && std::equal(e->cp_toks.begin(), e->cp_toks.end(), toks.begin()));
+
+        auto eval = [&](size_t from, size_t to) -> bool {
+            for (size_t i = from; i < to; i += e->n_batch) {
+                int m = std::min(e->n_batch, (int) (to - i));
+                if (llama_decode(e->ctx, llama_batch_get_one(toks.data() + i, m)) != 0) return false;
+                e->cached.insert(e->cached.end(), toks.begin() + i, toks.begin() + i + m);
+            }
+            return true;
+        };
+        bool ok;
+        if (want_cp) {
+            ok = eval(keep, n_cp);
+            if (ok) {
+                e->cp_state.resize(llama_state_seq_get_size(e->ctx, 0));
+                e->cp_state.resize(llama_state_seq_get_data(e->ctx, e->cp_state.data(), e->cp_state.size(), 0));
+                e->cp_toks.assign(toks.begin(), toks.begin() + n_cp);
+            }
+            ok = ok && eval(n_cp, toks.size());
+        } else ok = eval(keep, toks.size());
+        if (!ok) { llama_memory_clear(mem, true); e->cached.clear(); throw_rt(env, "decode failed"); return nullptr; }
+        n_past = (llama_pos) toks.size();
     }
 
     auto *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -146,6 +191,7 @@ Java_com_syntra_os_local_LlamaNative_generate(JNIEnv *env, jclass, jlong h, jstr
             }
         }
         if (llama_decode(e->ctx, llama_batch_get_one(&tok, 1)) != 0) break;
+        if (media.empty()) e->cached.push_back(tok);
         n_past++;
     }
     llama_sampler_free(smpl);
