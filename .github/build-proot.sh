@@ -21,7 +21,7 @@ ls $U/include/talloc.h $U/lib/libtalloc.so*
 TC=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin
 export CC=$TC/aarch64-linux-android24-clang STRIP=$TC/llvm-strip OBJCOPY=$TC/llvm-objcopy OBJDUMP=$TC/llvm-objdump
 git clone -q https://github.com/termux/proot tp && git -C tp checkout -q b27d81a68d765f3462e807f4a14e01a03f8e89ea
-export CFLAGS="-I$U/include -DARG_MAX=131072"
+export CFLAGS="-I$U/include -DARG_MAX=131072 -include string.h"  # upstream file misses string.h; newer clang rejects implicit decls
 export LDFLAGS="-L$U/lib"
 make -C tp/src V=1 PROOT_UNBUNDLE_LOADER=. HAS_LOADER_32BIT= proot loader/loader
 $STRIP tp/src/proot tp/src/loader/loader
