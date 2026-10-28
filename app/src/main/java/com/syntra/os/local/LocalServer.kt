@@ -30,7 +30,42 @@ import kotlin.concurrent.thread
  * on-device LFM models ("syntra", "syntra-vision", …) or a configured cloud provider ("openrouter/<model>").
  */
 class LocalServer(private val engines: LocalEngines, private val settings: () -> Settings, private val key: String) {
-    companion object { const val PORT = 8099 }
+    companion object {
+        const val PORT = 8099
+        /** Exposed for tests: the translation needs no server state. */
+        fun toOpenAiStatic(req: JsonObject) = translate(req)
+        private fun blocks(c: kotlinx.serialization.json.JsonElement?): String = when (c) {
+            is JsonPrimitive -> c.content
+            is JsonArray -> c.joinToString("\n") { b -> (b as? JsonObject)?.let { o ->
+                when (o.str("type")) { "text" -> o.str("text").orEmpty(); "tool_result" -> blocks(o["content"]); else -> "" } }.orEmpty() }
+            else -> ""
+        }
+        private fun translate(req: JsonObject): Pair<List<JsonObject>, JsonArray?> {
+            val msgs = mutableListOf<JsonObject>()
+            blocks(req["system"]).takeIf { it.isNotBlank() }?.let { msgs += com.syntra.os.core.message("system", it) }
+            (req["messages"] as? JsonArray).orEmpty().forEach { m ->
+                val o = m.jsonObject; val role = o.str("role") ?: "user"; val c = o["content"]
+                val bl = (c as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+                val uses = bl.filter { it.str("type") == "tool_use" }
+                val results = bl.filter { it.str("type") == "tool_result" }
+                results.forEach { tr -> msgs += com.syntra.os.core.toolResult(tr.str("tool_use_id") ?: "t", blocks(tr["content"])) }
+                val text = if (c is JsonPrimitive) c.content else bl.filter { it.str("type") == "text" }.joinToString("\n") { it.str("text").orEmpty() }
+                if (role == "assistant") msgs += buildJsonObject {
+                    put("role", "assistant"); put("content", text)
+                    if (uses.isNotEmpty()) putJsonArray("tool_calls") { uses.forEach { u -> add(buildJsonObject {
+                        put("id", u.str("id") ?: "t"); put("type", "function")
+                        putJsonObject("function") { put("name", u.str("name") ?: ""); put("arguments", (u["input"] ?: JsonObject(emptyMap())).toString()) }
+                    }) } }
+                } else if (text.isNotBlank() || results.isEmpty()) msgs += com.syntra.os.core.message("user", text)
+            }
+            val tools = (req["tools"] as? JsonArray)?.let { ts -> JsonArray(ts.mapNotNull { it as? JsonObject }.filter { it.str("name") != null }.map { t ->
+                buildJsonObject { put("type", "function"); putJsonObject("function") {
+                    put("name", t.str("name")!!); put("description", (t.str("description") ?: "").take(400)); put("parameters", t["input_schema"] ?: JsonObject(emptyMap()))
+                } }
+            }) }
+            return msgs to tools
+        }
+    }
     private var socket: ServerSocket? = null
 
     fun start() {
@@ -160,39 +195,7 @@ class LocalServer(private val engines: LocalEngines, private val settings: () ->
     private fun anthropicErr(out: OutputStream, msg: String) = respond(out, 400,
         buildJsonObject { put("type", "error"); putJsonObject("error") { put("type", "invalid_request_error"); put("message", msg) } }.toString())
 
-    private fun blocksText(c: kotlinx.serialization.json.JsonElement?): String = when (c) {
-        is JsonPrimitive -> c.content
-        is JsonArray -> c.joinToString("\n") { b -> (b as? JsonObject)?.let { o ->
-            when (o.str("type")) { "text" -> o.str("text").orEmpty(); "tool_result" -> blocksText(o["content"]); else -> "" } }.orEmpty() }
-        else -> ""
-    }
-
-    /** Anthropic request → OpenAI-style messages/tools (the format the engine and cloud adapters speak). */
-    fun toOpenAi(req: JsonObject): Pair<List<JsonObject>, JsonArray?> {
-        val msgs = mutableListOf<JsonObject>()
-        blocksText(req["system"]).takeIf { it.isNotBlank() }?.let { msgs += com.syntra.os.core.message("system", it) }
-        (req["messages"] as? JsonArray).orEmpty().forEach { m ->
-            val o = m.jsonObject; val role = o.str("role") ?: "user"; val c = o["content"]
-            val blocks = (c as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
-            val uses = blocks.filter { it.str("type") == "tool_use" }
-            val results = blocks.filter { it.str("type") == "tool_result" }
-            results.forEach { tr -> msgs += com.syntra.os.core.toolResult(tr.str("tool_use_id") ?: "t", blocksText(tr["content"])) }
-            val text = if (c is JsonPrimitive) c.content else blocks.filter { it.str("type") == "text" }.joinToString("\n") { it.str("text").orEmpty() }
-            if (role == "assistant") msgs += buildJsonObject {
-                put("role", "assistant"); put("content", text)
-                if (uses.isNotEmpty()) putJsonArray("tool_calls") { uses.forEach { u -> add(buildJsonObject {
-                    put("id", u.str("id") ?: "t"); put("type", "function")
-                    putJsonObject("function") { put("name", u.str("name") ?: ""); put("arguments", (u["input"] ?: JsonObject(emptyMap())).toString()) }
-                }) } }
-            } else if (text.isNotBlank() || results.isEmpty()) msgs += com.syntra.os.core.message("user", text)
-        }
-        val tools = (req["tools"] as? JsonArray)?.let { ts -> JsonArray(ts.mapNotNull { it as? JsonObject }.filter { it.str("name") != null }.map { t ->
-            buildJsonObject { put("type", "function"); putJsonObject("function") {
-                put("name", t.str("name")!!); put("description", (t.str("description") ?: "").take(400)); put("parameters", t["input_schema"] ?: JsonObject(emptyMap()))
-            } }
-        }) }
-        return msgs to tools
-    }
+    fun toOpenAi(req: JsonObject) = translate(req)
 
     private fun anthropic(out: OutputStream, req: JsonObject) {
         val model = req.str("model") ?: "syntra"

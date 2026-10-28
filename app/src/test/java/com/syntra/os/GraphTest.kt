@@ -139,3 +139,26 @@ class OsTest {
         assertEquals("ab", com.syntra.os.local.LfmPrompt.textOf(m as kotlinx.serialization.json.JsonObject))
     }
 }
+
+class RouterTest {
+    @Test fun routesByKeywords() {
+        val r = com.syntra.os.agent.Router
+        assertTrue(com.syntra.os.agent.Route.WEB in r.keywordRoutes("tell me today's war news"))
+        assertTrue(com.syntra.os.agent.Route.PHONE in r.keywordRoutes("Open YouTube"))
+        assertTrue(com.syntra.os.agent.Route.CODE in r.keywordRoutes("write a python script"))
+        assertTrue(r.keywordRoutes("thanks!").isEmpty())
+        val names = r.toolNames(setOf(com.syntra.os.agent.Route.WEB), code = false)
+        assertTrue("web_search" in names && "memory_search" in names && "shell" !in names)
+    }
+
+    @Test fun anthropicToOpenAi() {
+        val req = com.syntra.os.core.json.parseToJsonElement("""{"system":"S","messages":[
+            {"role":"user","content":"hi"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"a.txt"}]}],
+            "tools":[{"name":"Bash","description":"run","input_schema":{"type":"object"}}]}""") as kotlinx.serialization.json.JsonObject
+        val (m, t) = com.syntra.os.local.LocalServer.toOpenAiStatic(req)
+        assertEquals(listOf("system", "user", "assistant", "tool"), m.map { it["role"].toString().trim('"') })
+        assertEquals("Bash", t!!.single().toString().let { Regex("\"name\":\"(\\w+)\"").find(it)!!.groupValues[1] })
+    }
+}
