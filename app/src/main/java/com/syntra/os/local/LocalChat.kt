@@ -64,8 +64,12 @@ object LfmPrompt {
     private val TAG_NAME = Regex("<tool>\\s*([\\w.-]+)\\s*</tool>")
     private val THINK = Regex("<think>.*?(</think>|$)", RegexOption.DOT_MATCHES_ALL)
 
-    private fun value(v: String): JsonElement =
-        runCatching { json.parseToJsonElement(v.trim()).takeIf { it !is JsonPrimitive || !it.isString } }.getOrNull() ?: JsonPrimitive(v.trim())
+    /** Parameter text → JSON: objects/arrays/numbers/booleans/null as-is, everything else a string. */
+    private fun value(v: String): JsonElement {
+        val t = v.trim()
+        val structured = t.startsWith("{") || t.startsWith("[") || t == "true" || t == "false" || t == "null" || t.toDoubleOrNull() != null
+        return (if (structured) runCatching { json.parseToJsonElement(t) }.getOrNull() else null) ?: JsonPrimitive(t)
+    }
 
     /** Adds commas small models forget between lines: `"a": "x"\n "b": …`. */
     fun lenient(j: String) = j.replace(Regex("(\"|\\}|\\]|\\d|true|false|null)\\s*\\n(\\s*\")"), "$1,\n$2")
