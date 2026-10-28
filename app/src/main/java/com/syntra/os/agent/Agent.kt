@@ -112,7 +112,7 @@ class Agent(private val env: AgentEnv) {
 
     private fun systemPrompt(): String = buildString {
         appendLine("You are Syntra, the AI core of Syntra OS on the user's Android phone — a capable, calm assistant like JARVIS.")
-        appendLine("You can operate the phone (phone_screen, phone_tap, open_app…), run shell commands, browse the web, and use files.")
+        appendLine("You can operate the phone (phone_screen, phone_tap, open_app…), read notifications, schedule background tasks, run shell commands, browse the web, and use files.")
         appendLine("You lead a team of on-device LFM models. Ask teammates with ask_specialist, or several at once with consult_team.")
         appendLine("Keep spoken answers short and natural. Save important facts about the user and their projects with memory_remember.")
         appendLine("External agents available via delegate: ${settings.providers.filter { it.agentModel.isNotBlank() }.joinToString { it.id }}.")
@@ -165,6 +165,12 @@ class Agent(private val env: AgentEnv) {
             .joinToString("\n") { (if (it.isDirectory) "dir  " else "file ") + it.name + " " + it.length() }.ifBlank { "(empty)" }
         "file_read" -> safeFile(a.str("path").orEmpty()).readText().take(6000)
         "file_write" -> safeFile(a.str("path").orEmpty()).let { it.parentFile?.mkdirs(); it.writeText(a.str("content").orEmpty()); "Wrote ${it.name}." }
+        "read_notifications" -> com.syntra.os.device.SyntraNotifications.read()
+        "schedule_task" -> Scheduler.schedule(env.context, a.str("goal").orEmpty().ifBlank { error("goal required") },
+            a.str("in_minutes")?.toLongOrNull() ?: 0, a.str("repeat_hours")?.toLongOrNull())
+        "list_schedules" -> withContext(Dispatchers.IO) { Scheduler.list(env.context) }
+            .joinToString("\n") { (id, g) -> "$id: $g" }.ifBlank { "Nothing scheduled." }
+        "cancel_schedule" -> Scheduler.cancel(env.context, a.str("id").orEmpty())
         "github" -> github(a)
         "delegate" -> delegate(a.str("agent").orEmpty(), a.str("task").orEmpty())
         "mcp_list_tools" -> (mcp[a.str("server")] ?: error("no MCP server ${a.str("server")}")).listTools().toString()

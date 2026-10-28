@@ -12,14 +12,29 @@ android {
         applicationId = "com.syntra.os"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild { cmake { arguments += listOf("-DCMAKE_BUILD_TYPE=Release") } }
     }
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
+    signingConfigs {
+        // Committed debug key: every CI build has the same signature, so updates install over old ones.
+        // shortcut: public key, fine for sideloaded test builds; use a private release key before publishing.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android"
+        }
+    }
     buildTypes {
         release { isMinifyEnabled = false }
+    }
+    flavorDimensions += "edition"
+    productFlavors {
+        // Full: phone control (accessibility) + notification reading. Play Protect warns about these.
+        create("full") { dimension = "edition" }
+        // Lite: no accessibility/notification services, so it installs without the "sensitive data" block.
+        create("lite") { dimension = "edition"; applicationIdSuffix = ".lite"; versionNameSuffix = "-lite" }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -41,5 +56,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jsoup:jsoup:1.18.3")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("androidx.core:core-ktx:1.15.0")
     testImplementation("junit:junit:4.13.2")
 }

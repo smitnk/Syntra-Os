@@ -70,8 +70,18 @@ private fun Section(title: String, content: @Composable () -> Unit) =
 fun TasksScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
     var open by remember { mutableStateOf<String?>(null) }
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Header("TASKS", "Every agent run, its tool calls, and which models took part.") }
-        if (vm.tasks.isEmpty()) item { Text("No tasks yet.", color = Dim) }
+        item { Header("TASKS", "Every agent run and scheduled job, its tool calls, and which models took part.") }
+        if (vm.schedules.isNotEmpty()) item {
+            Section("Scheduled") {
+                vm.schedules.forEach { (id, goal) ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(goal, Modifier.weight(1f), fontSize = 14.sp)
+                        TextButton({ vm.cancelSchedule(id) }) { Text("Cancel", color = Danger) }
+                    }
+                }
+            }
+        }
+        if (vm.tasks.isEmpty()) item { Text("No tasks yet. Ask Syntra to do something — or \"remind me every morning…\".", color = Dim) }
         items(vm.tasks, key = { it.id }) { t ->
             val color = when (t.status) {
                 TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL -> Cyan; TaskStatus.DONE -> Ok
@@ -171,9 +181,17 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         item {
             val ctx = androidx.compose.ui.platform.LocalContext.current
             Section("Phone control") {
-                Text("Lets Syntra read the screen, tap, type, swipe and open apps.", color = Dim, fontSize = 12.sp)
-                OutlinedButton({ ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
-                    Text(if (com.syntra.os.device.SyntraAccessibility.instance != null) "Accessibility: on ✓" else "Enable accessibility service")
+                if (vm.isLite) Text("Lite edition: screen control and notification reading are not included, so it installs without " +
+                    "the \"sensitive data\" warning. Install the Full APK to get them.", color = Dim, fontSize = 12.sp)
+                else {
+                    Text("Lets Syntra read the screen, tap, type, swipe, open apps and read notifications.", color = Dim, fontSize = 12.sp)
+                    Text("If Android says \"Restricted setting\": App info → ⋮ → Allow restricted settings, then try again.", color = Dim, fontSize = 12.sp)
+                    OutlinedButton({ ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
+                        Text(if (com.syntra.os.device.SyntraAccessibility.instance != null) "Accessibility: on ✓" else "Enable accessibility service")
+                    }
+                    OutlinedButton({ ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) {
+                        Text(if (com.syntra.os.device.SyntraNotifications.instance != null) "Notification access: on ✓" else "Enable notification access")
+                    }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Ask before tapping / typing", Modifier.weight(1f))

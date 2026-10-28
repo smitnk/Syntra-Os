@@ -107,6 +107,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Background jobs write graph/tasks files directly; pick their changes up when the app returns. */
+    fun reload() {
+        if (busy) return
+        graph = store.load("graph", Graph.serializer(), graph)
+        tasks = store.load("tasks", ListSerializer(TaskRun.serializer()), tasks)
+        schedules = runCatching { com.syntra.os.agent.Scheduler.list(getApplication()) }.getOrDefault(emptyList())
+    }
+
+    var schedules by mutableStateOf(listOf<Pair<String, String>>()); private set
+
+    fun cancelSchedule(id: String) {
+        com.syntra.os.agent.Scheduler.cancel(getApplication(), id)
+        schedules = schedules.filterNot { it.first == id }
+    }
+
+    val isLite get() = getApplication<Application>().packageName.endsWith(".lite")
+
     fun cancel() { approval?.complete(false); engines.stopAll(); job?.cancel() }
 
     private suspend fun askApproval(action: String): Boolean {

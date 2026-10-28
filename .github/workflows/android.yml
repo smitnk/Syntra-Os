@@ -11,10 +11,15 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
-      - name: Verify on-device LLM library is packaged
-        run: unzip -l app/build/outputs/apk/debug/*.apk | grep 'lib/arm64-v8a/libsyntra_llm.so'
+      - run: ./gradlew --no-daemon testFullDebugUnitTest assembleFullDebug assembleLiteDebug
+      - name: Collect APKs
+        run: |
+          mkdir out
+          cp app/build/outputs/apk/full/debug/*.apk out/SyntraOS-full.apk
+          cp app/build/outputs/apk/lite/debug/*.apk out/SyntraOS-lite.apk
+          for a in out/*.apk; do unzip -l "$a" | grep -q 'lib/arm64-v8a/libsyntra_llm.so' || { echo "native lib missing in $a"; exit 1; }; done
+          unzip -p out/SyntraOS-lite.apk AndroidManifest.xml | grep -qa SyntraAccessibility && { echo "lite must not declare accessibility"; exit 1; } || true
       - uses: actions/upload-artifact@v4
         with:
-          name: syntra-os-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: syntra-os-apks
+          path: out/*.apk

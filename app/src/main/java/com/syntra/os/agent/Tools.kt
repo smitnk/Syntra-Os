@@ -70,6 +70,11 @@ val TOOLS: JsonArray = buildJsonArray {
         listOf("path"), mapOf("method" to "GET|POST|PATCH|PUT|DELETE", "path" to "e.g. /repos/owner/repo/issues", "body" to "JSON body")))
     add(tool("delegate", "Hand a whole task to an external agent (OpenClaw or Hermes) and get its result.",
         listOf("agent", "task"), mapOf("agent" to "openclaw|hermes", "task" to "Complete task description")))
+    add(tool("read_notifications", "Read the phone's current notifications.", emptyList(), emptyMap()))
+    add(tool("schedule_task", "Run a goal later in the background (and optionally repeat). The result arrives as a notification.",
+        listOf("goal", "in_minutes"), mapOf("goal" to "What to do", "in_minutes" to "Delay in minutes", "repeat_hours" to "Repeat every N hours, optional")))
+    add(tool("list_schedules", "List scheduled background tasks.", emptyList(), emptyMap()))
+    add(tool("cancel_schedule", "Cancel a scheduled task by id.", listOf("id"), mapOf("id" to "Job id from list_schedules")))
     add(tool("mcp_list_tools", "List tools on a connected MCP server.", listOf("server"), mapOf("server" to "Server name")))
     add(tool("mcp_call", "Call a tool on a connected MCP server.", listOf("server", "tool"),
         mapOf("server" to "Server name", "tool" to "Tool name", "arguments" to "Tool arguments object")))

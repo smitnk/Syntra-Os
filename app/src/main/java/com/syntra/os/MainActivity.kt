@@ -121,7 +121,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); if (vm.settings.alwaysListening) startVoice() }
+    private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
+    override fun onResume() {
+        super.onResume()
+        vm.reload()
+        // Ask for notifications once, after the mic prompt has had its turn (two dialogs can't overlap).
+        if (android.os.Build.VERSION.SDK_INT >= 33 && hasMic() && !askedNotif &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            askedNotif = true
+            notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else if (vm.settings.alwaysListening) startVoice()
+    }
+    private var askedNotif = false
     override fun onPause() { voice.stop(); super.onPause() }
     override fun onDestroy() { voice.release(); super.onDestroy() }
 }
