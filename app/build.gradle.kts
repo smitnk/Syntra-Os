@@ -15,7 +15,14 @@ android {
         versionCode = 4
         versionName = "0.4.0"
         ndk { abiFilters += listOf("arm64-v8a") }
-        externalNativeBuild { cmake { arguments += listOf("-DCMAKE_BUILD_TYPE=Release") } }
+        externalNativeBuild { cmake {
+            arguments += listOf("-DCMAKE_BUILD_TYPE=Release")
+            // CI sets SYNTRA_VK_PREFIX (Vulkan + SPIR-V headers) and SYNTRA_GLSLC to build the optional GPU backend.
+            System.getenv("SYNTRA_VK_PREFIX")?.let { vk ->
+                arguments += listOf("-DSYNTRA_VULKAN=ON", "-DVulkan_INCLUDE_DIR=$vk/include",
+                    "-DVulkan_GLSLC_EXECUTABLE=${System.getenv("SYNTRA_GLSLC")}", "-DSPIRV-Headers_DIR=$vk/share/cmake/SPIRV-Headers")
+            }
+        } }
     }
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     signingConfigs {

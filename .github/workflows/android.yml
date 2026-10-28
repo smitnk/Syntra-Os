@@ -15,6 +15,17 @@ jobs:
         run: |
           bash .github/build-proot.sh > proot.log 2>&1 || { { grep -nE "error:|fatal|No such|not found|undefined" proot.log | head -25; tail -6 proot.log; } | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
           tail -12 proot.log
+      - name: Vulkan headers + glslc for the optional GPU backend
+        run: |
+          set -e
+          sudo apt-get install -y -qq glslc >/dev/null
+          P=$PWD/vkdeps
+          for r in Vulkan-Headers SPIRV-Headers; do
+            git clone -q --depth 1 https://github.com/KhronosGroup/$r && cmake -S $r -B $r/b -DCMAKE_INSTALL_PREFIX=$P >/dev/null && cmake --install $r/b >/dev/null
+          done
+          ls $P/include/vulkan/vulkan.hpp $P/share/cmake/SPIRV-Headers
+          echo "SYNTRA_VK_PREFIX=$P" >> $GITHUB_ENV
+          echo "SYNTRA_GLSLC=$(command -v glslc)" >> $GITHUB_ENV
       - name: Build and test
         run: |
           set -o pipefail

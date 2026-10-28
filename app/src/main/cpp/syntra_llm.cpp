@@ -2,6 +2,7 @@
 #include <jni.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -41,7 +42,9 @@ static void throw_rt(JNIEnv *env, const std::string &msg) {
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_syntra_os_local_LlamaNative_load(JNIEnv *env, jclass, jstring jpath, jstring jmmproj, jint n_ctx, jint n_threads, jint n_threads_batch,
                                           jint n_gpu_layers) {
-    std::call_once(g_backend, [] { llama_backend_init(); });
+    // GPU off: hide all Vulkan devices before the backend starts, so a Vulkan build behaves exactly like CPU-only.
+    // (Decided at the first load; switching GPU on/off applies after an app restart.)
+    std::call_once(g_backend, [n_gpu_layers] { if (n_gpu_layers <= 0) setenv("GGML_VK_VISIBLE_DEVICES", "", 1); llama_backend_init(); });
     auto *e = new Engine();
     auto mp = llama_model_default_params();
     mp.n_gpu_layers = n_gpu_layers; // >0 only when built with Vulkan and the user enabled GPU
