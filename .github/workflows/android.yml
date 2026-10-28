@@ -11,7 +11,13 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew --no-daemon testFullDebugUnitTest assembleFullDebug assembleLiteDebug
+      - name: Build and test
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon testFullDebugUnitTest assembleFullDebug assembleLiteDebug 2>&1 | tee build.log || {
+            grep -E "^e: |error:|FAILED|Test.*>.*FAILED|Exception|expected:" build.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+            for f in app/build/test-results/*/*.xml; do grep -A3 "<failure" "$f" | head -8 | while IFS= read -r l; do echo "::error::$l"; done; done
+            exit 1; }
       - name: Collect APKs
         run: |
           mkdir out
