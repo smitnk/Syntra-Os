@@ -87,8 +87,20 @@ class Agent(private val env: AgentEnv) {
     suspend fun run(goal: String, history: List<JsonObject>, image: String? = null, skill: Skill? = null, code: Boolean = false,
                     maxSteps: Int = if (code) 30 else 14): String {
         media = image; this.skill = skill; this.code = code
-        val lead = settings.primaryRole
-        val tools = JsonArray(TOOLS + loadMcpTools())
+        // Lead: the chosen model if it's ready, otherwise the best downloaded chat model.
+        val lead = settings.primaryRole.takeIf { available(it) } ?: listOf(ModelRole.OMNI, ModelRole.TEXT, ModelRole.VISION).firstOrNull { available(it) }
+            ?: error("No chat model downloaded yet — open Setup → On-device models and download LFM3-Omni-2B.")
+        // Route first: only the tool groups this request needs go into the prompt (much less to read on a phone).
+        var routes = Router.keywordRoutes(goal)
+        if (routes.isEmpty() && settings.useD1Router && env.engines.installedRoles().contains(ModelRole.DECISION)) runCatching {
+            val p = env.engines.classify(ModelRole.DECISION, Router.d1Prompt(goal), Router.labels)
+            routes = setOf(Router.fromLabel(Router.labels[p.indices.maxBy { p[it] }]))
+            env.log(Step(StepKind.THOUGHT, "d1-Omni-2B", "Routed as ${routes.first().name.lowercase()}"))
+        }
+        if (routes.isEmpty()) routes = setOf(Route.WEB) // unknown requests: allow a quick web lookup, nothing more
+        val names = Router.toolNames(routes, code)
+        val tools = JsonArray(TOOLS.filter { (it as JsonObject)["function"]?.jsonObject?.str("name") in names } +
+            if (Route.AUTOMATION in routes) loadMcpTools() else emptyList())
         val team = teamBriefing(goal, image)
         val messages = mutableListOf(message("system", systemPrompt())).apply {
             addAll(history.takeLast(10))
@@ -120,7 +132,9 @@ class Agent(private val env: AgentEnv) {
      * (The d1 decision model is a classifier, so it never plans or writes text.)
      */
     private suspend fun teamBriefing(goal: String, image: String?): String = coroutineScope {
-        val vision = if (image != null) listOf(ModelRole.VISION, ModelRole.OMNI).firstOrNull { available(it) }?.let { r ->
+        // Omni (and VL) read images themselves; only a text-only lead needs a vision teammate to describe it.
+        val leadSees = env.engines.hasProjector(settings.primaryRole) && settings.provider(settings.slot(settings.primaryRole).providerId)?.local == true
+        val vision = if (image != null && !leadSees) listOf(ModelRole.OMNI, ModelRole.VISION).firstOrNull { available(it) }?.let { r ->
             async { "\n\n[${r.label} teammate sees the image]\n" + runCatching {
                 env.log(Step(StepKind.THOUGHT, settings.slot(r).model, "Looking at the image…"))
                 callModel(env, r, listOf(message("user", "Describe this image in detail for a teammate who cannot see it. Include any text.")), null, image, null).content
@@ -175,23 +189,16 @@ class Agent(private val env: AgentEnv) {
         return r
     }
 
+    /** Kept short on purpose: every token here is read before the first word appears. */
     private fun systemPrompt(): String = buildString {
-        appendLine("You are Syntra, the AI core of Syntra OS on the user's Android phone — a capable, calm assistant like JARVIS.")
-        appendLine("Be an agent, not a chatbot: when a request needs information or an action, call tools yourself. Never tell the user to do something a tool can do.")
-        appendLine("Examples: news/facts → web_search then web_fetch or scrape; 'open X' → open_app; screen → phone_screen; code/apps/files → shell or code_agent; " +
-            "YouTube/Instagram/Gmail/Sheets/other apps online → the zapier mcp__ tools; repeat later → schedule_task; user corrects you → learn.")
-        appendLine("Your shell is a real Ubuntu Linux (apt, python, git). The agentic-os folder (context, memory, outputs) is at /root/agentic-os.")
-        appendLine("Team: ask_specialist / consult_team reach the other downloaded LFM models (vision, omni); they take turns on the phone.")
-        appendLine("Answer in plain, natural sentences — never raw JSON or tool markup. Keep answers short; they may be spoken aloud.")
-        if (code) {
-            appendLine("\n## CODE MODE (harness)")
-            appendLine("You are a coding agent like Claude Code. Work in /root/projects inside Ubuntu. Loop: todo (plan) → read files (shell cat/ls) → " +
-                "write files (shell with heredoc, or code_agent for multi-file edits) → run/test with shell → fix errors → repeat until it works. " +
-                "Report what you built and how to run it.")
-        }
+        appendLine("You are Syntra, the user's on-phone AI assistant (like JARVIS). Act with tools when a request needs facts or actions; " +
+            "don't tell the user to do what a tool can do. For news or facts: web_search, then web_fetch the best result.")
+        appendLine("Reply in short, plain sentences (they may be spoken). Never show JSON or tool markup.")
+        if (code) appendLine("CODE MODE: you are a coding agent in Ubuntu (/root/projects). Loop: todo plan → write files with shell heredocs " +
+            "or code_agent → run with shell → fix errors → repeat until it works. Then say what you built and how to run it.")
         append(os.context())
         val skills = skill?.let { listOf(it) } ?: env.skills.filter { it.enabled }
-        skills.forEach { appendLine("\n## Skill: ${it.name}\n${it.prompt.take(2500)}") }
+        skills.forEach { appendLine("\n## Skill: ${it.name}\n${it.prompt.take(1500)}") }
     }
 
     private suspend fun execute(name: String, a: JsonObject): String = when (name) {

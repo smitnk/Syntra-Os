@@ -37,7 +37,7 @@ import kotlinx.serialization.json.jsonObject
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = Store(app.filesDir)
     val models = ModelManager(app.filesDir)
-    val engines = LocalEngines(models, app)
+    val engines = LocalEngines(models, app) { if (settings.useGpu) 99 else 0 }
 
     var settings by mutableStateOf(migrate(store.load("settings", Settings.serializer(), Settings()))); private set
     var graph by mutableStateOf(store.load("graph", Graph.serializer(), Graph())); private set
@@ -101,7 +101,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Older installs lack the on-device / OpenClaw / Hermes providers. */
     private fun migrate(s0: Settings): Settings {
-        val s = if (s0.primaryRole == ModelRole.DECISION) s0.copy(primaryRole = ModelRole.TEXT) else s0 // d1 can't chat
+        var s = if (s0.primaryRole == ModelRole.DECISION) s0.copy(primaryRole = ModelRole.OMNI) else s0 // d1 can't chat
+        // Omni is the all-rounder (text + images + audio): make it the lead once, as soon as it's downloaded.
+        if (!s.omniDefaultApplied && models.installed(ModelRole.OMNI) != null) s = s.copy(primaryRole = ModelRole.OMNI, omniDefaultApplied = true)
         val missing = DEFAULT_PROVIDERS.filter { d -> s.providers.none { it.id == d.id } }
         return if (missing.isEmpty()) s else s.copy(providers = missing + s.providers)
     }

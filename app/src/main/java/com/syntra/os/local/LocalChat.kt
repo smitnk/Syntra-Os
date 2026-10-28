@@ -159,7 +159,7 @@ object LfmPrompt {
 class LocalEngines(private val models: ModelManager, private val ctx: android.content.Context,
                    /** 0 = CPU only; >0 = layers offloaded to the GPU (Vulkan builds only). */
                    val gpuLayers: () -> Int = { 0 }) {
-    private class Loaded(val handle: Long, val media: Boolean, var lastUse: Long, val cpFile: java.io.File) { var bg: Long = 0 }
+    private class Loaded(val handle: Long, val media: Boolean, var lastUse: Long, val dir: java.io.File) { var bg: Long = 0; var cpKey = "" }
     private val loaded = java.util.concurrent.ConcurrentHashMap<ModelRole, Loaded>()
     private val locks = ModelRole.entries.associateWith { Mutex() }
     private val bgLocks = ModelRole.entries.associateWith { Mutex() }
@@ -192,13 +192,11 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
                 .minByOrNull { it.value.lastUse }?.key ?: break
             freeLoaded(victim)
         }
-        if (memInfo().availMem - need < 1_000_000_000L)
-            error("Not enough free memory to load ${role.defaultModel} — close some apps and try again.")
+        // No hard refusal: Android's "available" excludes cached apps it will reclaim on demand (v0.7 refused wrongly).
+        // The low-memory killer handles real pressure; inference runs at background priority so System UI stays safe.
         val threads = if (Runtime.getRuntime().availableProcessors() >= 8) 4 else 2 // big cores only; leave the rest for the UI
         val h = withContext(pool) { background(); LlamaNative.load(files.model.path, files.mmproj?.path, 4096, threads, threads, gpuLayers()) }
-        val cp = java.io.File(files.model.parentFile, "checkpoint.bin")
-        withContext(pool) { LlamaNative.loadCheckpoint(h, cp.path) }
-        Loaded(h, LlamaNative.hasMedia(h), System.currentTimeMillis(), cp).also { loaded[role] = it }
+        Loaded(h, LlamaNative.hasMedia(h), System.currentTimeMillis(), files.model.parentFile!!).also { loaded[role] = it }
     }
 
     /** Inference threads run at background priority so taps, scrolling and System UI always win. */
@@ -219,6 +217,13 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
             }
             val useMedia = media?.takeIf { e.media && !background }
             val p = LfmPrompt.render(messages, tools, if (useMedia != null) LlamaNative.marker() else null)
+            // One saved checkpoint per distinct system prompt (each router tool set has its own).
+            val key = Integer.toHexString(p.text.toByteArray().copyOf(p.stableBytes).contentHashCode())
+            val cpFile = java.io.File(e.dir, "checkpoint-$key.bin")
+            if (!background && p.stableBytes > 0 && e.cpKey != key) {
+                withContext(pool) { LlamaNative.loadCheckpoint(handle, cpFile.path) }
+                e.cpKey = key
+            }
             active = active + role
             try {
                 val buf = ByteArrayOutputStream()
@@ -234,10 +239,22 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
                         true
                     }, if (background) 0 else p.stableBytes)
                 }
-                if (!background) withContext(pool) { LlamaNative.saveCheckpoint(handle, e.cpFile.path) }
+                if (!background) withContext(pool) {
+                    if (LlamaNative.saveCheckpoint(handle, cpFile.path)) // keep the 6 most recent tool-set checkpoints
+                        e.dir.listFiles { f -> f.name.startsWith("checkpoint") }.orEmpty().sortedByDescending { it.lastModified() }.drop(6).forEach { it.delete() }
+                }
                 LfmPrompt.parse(String(bytes, Charsets.UTF_8))
             } finally { active = active - role }
         } }
+
+    fun hasProjector(role: ModelRole) = models.installed(role)?.mmproj != null
+
+    /** Scores [labels] with a classifier model (d1) — reads one distribution, generates nothing. */
+    suspend fun classify(role: ModelRole, prompt: String, labels: Array<String>): FloatArray = locks.getValue(role).withLock { compute.withLock {
+        val e = engine(role)
+        active = active + role
+        try { withContext(pool) { background(); LlamaNative.scoreLabels(e.handle, prompt, labels) } } finally { active = active - role }
+    } }
 
     fun stopAll() = loaded.values.toList().forEach { LlamaNative.stop(it.handle); if (it.bg != 0L) LlamaNative.stop(it.bg) }
     fun isLoaded(role: ModelRole) = loaded.containsKey(role)

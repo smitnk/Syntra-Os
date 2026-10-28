@@ -43,7 +43,7 @@ data class McpServer(val name: String, val url: String, val token: String = "")
 data class Settings(
     val providers: List<Provider> = DEFAULT_PROVIDERS,
     val slots: List<ModelSlot> = ModelRole.entries.map { ModelSlot(it, ON_DEVICE) },
-    val primaryRole: ModelRole = ModelRole.TEXT,
+    val primaryRole: ModelRole = ModelRole.OMNI,
     val mcpServers: List<McpServer> = emptyList(),
     val githubToken: String = "",
     val speakReplies: Boolean = true,
@@ -51,8 +51,13 @@ data class Settings(
     val wakeWords: String = "syntra, jarvis",
     val askPhoneActions: Boolean = true,
     val autoMemory: Boolean = true,
-    /** Decision model drafts a plan before the lead acts (when it's available). */
-    val teamPlanning: Boolean = true,
+    val teamPlanning: Boolean = false, // unused since v0.7 (d1 is a classifier); kept so old settings files load
+    /** Ask the d1 classifier to route requests keywords can't place (swaps models on 8 GB phones). */
+    val useD1Router: Boolean = false,
+    /** Offload model layers to the GPU (Vulkan builds only). */
+    val useGpu: Boolean = false,
+    /** One-time switch of the default lead model to Omni once it's downloaded. */
+    val omniDefaultApplied: Boolean = false,
     /** Ask before shell / code_agent / Hermes run in the app's Ubuntu sandbox. */
     val askLinux: Boolean = true,
     val telegramToken: String = "",
