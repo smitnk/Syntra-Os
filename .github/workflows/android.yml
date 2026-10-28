@@ -11,27 +11,28 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
-      - name: Bundle proot builds (Termux + green-green-avk) as native libs
+      - name: Build Syntra's own proot (Termux source + NDK, static talloc) and bundle as native libs
         run: |
           set -e
+          J=$PWD/app/src/main/jniLibs/arm64-v8a; mkdir -p $J
           git clone -q https://github.com/green-green-avk/build-proot-android bpa && git -C bpa checkout -q 01f83b8841358450c78333d1b33ab30d4943bec4
+          # Fallback: green-green-avk's prebuilt Android-app proot.
           mkdir -p t && tar xzf bpa/packages/proot-android-aarch64.tar.gz -C t
-          J=app/src/main/jniLibs/arm64-v8a; mkdir -p $J
-          cp t/root/bin/proot $J/libproot-gg.so
-          cp t/root/libexec/proot/loader $J/libproot-gg-loader.so
-          # Termux's proot as well: newer, knows the syscalls Ubuntu 24.04's glibc uses. The app probes both.
-          sudo apt-get install -y -qq patchelf >/dev/null
-          M=https://packages.termux.dev/apt/termux-main
-          curl -fsSL $M/dists/stable/main/binary-aarch64/Packages -o Packages || { M=https://cdimage.debian.org/mirror/termux.dev/apt/termux-main; curl -fsSL $M/dists/stable/main/binary-aarch64/Packages -o Packages; }
-          deb() { awk -v p="$1" '$1=="Package:"{x=($2==p)} x&&$1=="Filename:"{print $2; exit}' Packages; }
-          mkdir -p tx && for p in proot libtalloc; do f=$(deb $p); echo "$p -> $f"; curl -fsSL "$M/$f" -o $p.deb; dpkg-deb -x $p.deb tx; done
-          U=tx/data/data/com.termux/files/usr
-          cp $U/bin/proot $J/libproot.so
-          cp $(ls $U/lib/libtalloc.so.* | head -1) $J/libtalloc.so
-          cp $U/libexec/proot/loader $J/libproot-loader.so
-          patchelf --replace-needed libtalloc.so.2 libtalloc.so --remove-rpath $J/libproot.so
-          patchelf --set-soname libtalloc.so $J/libtalloc.so
-          ls -la $J
+          cp t/root/bin/proot $J/libproot-gg.so; cp t/root/libexec/proot/loader $J/libproot-gg-loader.so
+          # Static talloc via green-green-avk's cross-compile recipe, for aarch64 only, with this runner's NDK.
+          cd bpa
+          sed -i "s|^NDK=.*|NDK=\"$ANDROID_NDK_LATEST_HOME\"|; s|^ARCHS=.*|ARCHS='aarch64'|" config
+          ./get-talloc.sh >/dev/null && ./make-talloc-static.sh >/dev/null
+          . ./config; set-arch aarch64
+          # Termux's maintained proot (knows the syscalls Ubuntu 24.04 uses), built for Syntra: loader unbundled
+          # so it runs from nativeLibraryDir (Android blocks executing files from app data).
+          git clone -q https://github.com/termux/proot tp && git -C tp checkout -q b27d81a68d765f3462e807f4a14e01a03f8e89ea
+          export CFLAGS="-I$STATIC_ROOT/include -DARG_MAX=131072 -Werror=implicit-function-declaration"
+          export LDFLAGS="-L$STATIC_ROOT/lib"
+          make -C tp/src V=1 PROOT_UNBUNDLE_LOADER=. HAS_LOADER_32BIT= proot loader/loader >/dev/null
+          "$STRIP" tp/src/proot tp/src/loader/loader
+          cp tp/src/proot $J/libproot.so; cp tp/src/loader/loader $J/libproot-loader.so
+          cd ..; ls -la $J; file $J/* || true
       - name: Build and test
         run: |
           set -o pipefail
@@ -44,7 +45,7 @@ jobs:
           mkdir out
           cp app/build/outputs/apk/full/debug/*.apk out/SyntraOS-full.apk
           cp app/build/outputs/apk/lite/debug/*.apk out/SyntraOS-lite.apk
-          for a in out/*.apk; do for l in libsyntra_llm.so libproot.so libproot-loader.so libtalloc.so libproot-gg.so libproot-gg-loader.so; do unzip -l "$a" | grep -q "lib/arm64-v8a/$l" || { echo "$l missing in $a"; exit 1; }; done; done
+          for a in out/*.apk; do for l in libsyntra_llm.so libproot.so libproot-loader.so libproot-gg.so libproot-gg-loader.so; do unzip -l "$a" | grep -q "lib/arm64-v8a/$l" || { echo "$l missing in $a"; exit 1; }; done; done
           unzip -p out/SyntraOS-lite.apk AndroidManifest.xml | grep -qa SyntraAccessibility && { echo "lite must not declare accessibility"; exit 1; } || true
       - uses: actions/upload-artifact@v4
         with:

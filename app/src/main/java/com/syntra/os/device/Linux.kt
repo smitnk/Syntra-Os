@@ -113,9 +113,10 @@ object Linux {
     /** proot command line; [shell] runs after it. */
     /** A way of running proot. Which one works depends on the phone's kernel and Android seccomp policy. */
     enum class Variant(val bin: String, val loader: String, val termux: Boolean, val seccomp: Boolean) {
-        TERMUX("libproot.so", "libproot-loader.so", true, true),
-        TERMUX_NO_SECCOMP("libproot.so", "libproot-loader.so", true, false),
-        ANDROID_APP("libproot-gg.so", "libproot-gg-loader.so", false, false),
+        SYNTRA("libproot.so", "libproot-loader.so", true, true),            // Termux source, built for Syntra
+        SYNTRA_NO_SECCOMP("libproot.so", "libproot-loader.so", true, false),
+        LEGACY("libproot-gg.so", "libproot-gg-loader.so", false, true),     // older Android-app build
+        LEGACY_NO_SECCOMP("libproot-gg.so", "libproot-gg-loader.so", false, false),
     }
 
     @Volatile private var chosen: Variant? = null
@@ -143,7 +144,7 @@ object Linux {
             if ("SYNTRA_OK" in r) { chosen = v; prefs(ctx).edit().putString("variant", v.name).apply(); lastProbe = log.toString(); return v }
         }
         lastProbe = log.toString()
-        return Variant.TERMUX_NO_SECCOMP.also { chosen = it } // nothing passed; keep the most compatible and show the log
+        return Variant.SYNTRA_NO_SECCOMP.also { chosen = it } // nothing passed; keep the most compatible and show the log
     }
 
     fun resetVariant(ctx: Context) { chosen = null; prefs(ctx).edit().remove("variant").apply() }
