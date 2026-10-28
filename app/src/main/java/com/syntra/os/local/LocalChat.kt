@@ -156,7 +156,9 @@ object LfmPrompt {
  * models generate truly in parallel while one model serves one request at a time.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-class LocalEngines(private val models: ModelManager, private val ctx: android.content.Context) {
+class LocalEngines(private val models: ModelManager, private val ctx: android.content.Context,
+                   /** 0 = CPU only; >0 = layers offloaded to the GPU (Vulkan builds only). */
+                   val gpuLayers: () -> Int = { 0 }) {
     private class Loaded(val handle: Long, val media: Boolean, var lastUse: Long, val cpFile: java.io.File) { var bg: Long = 0 }
     private val loaded = java.util.concurrent.ConcurrentHashMap<ModelRole, Loaded>()
     private val locks = ModelRole.entries.associateWith { Mutex() }
@@ -193,7 +195,7 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
         if (memInfo().availMem - need < 1_000_000_000L)
             error("Not enough free memory to load ${role.defaultModel} — close some apps and try again.")
         val threads = if (Runtime.getRuntime().availableProcessors() >= 8) 4 else 2 // big cores only; leave the rest for the UI
-        val h = withContext(pool) { background(); LlamaNative.load(files.model.path, files.mmproj?.path, 4096, threads, threads) }
+        val h = withContext(pool) { background(); LlamaNative.load(files.model.path, files.mmproj?.path, 4096, threads, threads, gpuLayers()) }
         val cp = java.io.File(files.model.parentFile, "checkpoint.bin")
         withContext(pool) { LlamaNative.loadCheckpoint(h, cp.path) }
         Loaded(h, LlamaNative.hasMedia(h), System.currentTimeMillis(), cp).also { loaded[role] = it }

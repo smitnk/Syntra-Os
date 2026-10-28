@@ -1,6 +1,7 @@
 // JNI bridge: one Engine per loaded GGUF model, so several LFM models can run at the same time.
 #include <jni.h>
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -38,11 +39,12 @@ static void throw_rt(JNIEnv *env, const std::string &msg) {
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_syntra_os_local_LlamaNative_load(JNIEnv *env, jclass, jstring jpath, jstring jmmproj, jint n_ctx, jint n_threads, jint n_threads_batch) {
+Java_com_syntra_os_local_LlamaNative_load(JNIEnv *env, jclass, jstring jpath, jstring jmmproj, jint n_ctx, jint n_threads, jint n_threads_batch,
+                                          jint n_gpu_layers) {
     std::call_once(g_backend, [] { llama_backend_init(); });
     auto *e = new Engine();
     auto mp = llama_model_default_params();
-    mp.n_gpu_layers = 0;
+    mp.n_gpu_layers = n_gpu_layers; // >0 only when built with Vulkan and the user enabled GPU
     e->model = llama_model_load_from_file(jstr(env, jpath).c_str(), mp);
     if (!e->model) { delete e; throw_rt(env, "failed to load model"); return 0; }
     auto cp = llama_context_default_params();
@@ -56,7 +58,7 @@ Java_com_syntra_os_local_LlamaNative_load(JNIEnv *env, jclass, jstring jpath, js
     std::string mm = jstr(env, jmmproj);
     if (!mm.empty()) {
         auto mpp = mtmd_context_params_default();
-        mpp.use_gpu = false;
+        mpp.use_gpu = n_gpu_layers > 0;
         mpp.n_threads = n_threads_batch;
         e->mtmd = mtmd_init_from_file(mm.c_str(), e->model, mpp);
         // A missing projector only disables image/audio input; text keeps working.
@@ -107,6 +109,39 @@ Java_com_syntra_os_local_LlamaNative_loadCheckpoint(JNIEnv *env, jclass, jlong h
     if (!ok || state.empty()) return false;
     e->cp_toks = std::move(toks); e->cp_state = std::move(state);
     return true;
+}
+
+// Classifier-style use (d1 decision model): reads the next-token distribution once and returns, for each label,
+// the probability of its first token, normalised over the labels. No text is generated.
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_syntra_os_local_LlamaNative_scoreLabels(JNIEnv *env, jclass, jlong h, jstring jprompt, jobjectArray jlabels) {
+    auto *e = reinterpret_cast<Engine *>(h);
+    const std::string prompt = jstr(env, jprompt);
+    llama_memory_clear(llama_get_memory(e->ctx), true);
+    e->cached.clear();
+    int n = -llama_tokenize(e->vocab, prompt.c_str(), (int) prompt.size(), nullptr, 0, true, true);
+    std::vector<llama_token> toks(n);
+    if (n <= 0 || llama_tokenize(e->vocab, prompt.c_str(), (int) prompt.size(), toks.data(), n, true, true) < 0 ||
+        n >= (int) llama_n_ctx(e->ctx)) { throw_rt(env, "classifier prompt invalid or too long"); return nullptr; }
+    for (int i = 0; i < n; i += e->n_batch) {
+        int m = std::min(e->n_batch, n - i);
+        if (llama_decode(e->ctx, llama_batch_get_one(toks.data() + i, m)) != 0) { throw_rt(env, "decode failed"); return nullptr; }
+    }
+    const float *logits = llama_get_logits_ith(e->ctx, -1);
+    const int nl = env->GetArrayLength(jlabels);
+    std::vector<float> lg(nl, -1e30f);
+    for (int i = 0; i < nl; i++) {
+        std::string lab = " " + jstr(env, (jstring) env->GetObjectArrayElement(jlabels, i));
+        llama_token t[8];
+        int k = llama_tokenize(e->vocab, lab.c_str(), (int) lab.size(), t, 8, false, false);
+        if (k > 0) lg[i] = logits[t[0]];
+    }
+    float mx = *std::max_element(lg.begin(), lg.end()), sum = 0;
+    for (float &v : lg) { v = expf(v - mx); sum += v; }
+    for (float &v : lg) v /= sum;
+    jfloatArray out = env->NewFloatArray(nl);
+    env->SetFloatArrayRegion(out, 0, nl, lg.data());
+    return out;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

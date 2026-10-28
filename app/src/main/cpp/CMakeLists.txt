@@ -24,6 +24,11 @@ set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 # Dotprod + fp16 + int8 matmul: present on Dimensity 7200/8000-class and newer phones.
 # shortcut: SIGILL on pre-2021 ARMv8.0 phones; build GGML_CPU_ALL_VARIANTS if those must be supported.
 set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+fp16+i8mm" CACHE STRING "" FORCE)
+# Optional GPU (Vulkan) backend; CI passes SYNTRA_VULKAN=ON with Vulkan/SPIR-V headers and the NDK's glslc.
+option(SYNTRA_VULKAN "Build llama.cpp with the Vulkan backend" OFF)
+if (SYNTRA_VULKAN)
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+endif()
 FetchContent_MakeAvailable(llama)
 
 add_library(syntra_llm SHARED syntra_llm.cpp)
