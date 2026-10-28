@@ -38,7 +38,7 @@ val PHONE_TOOLS = setOf("phone_tap", "phone_type", "phone_swipe", "phone_action"
 val ALWAYS_ASK = setOf("mcp_call", "delegate")
 
 /** Commands inside the app's own Ubuntu sandbox; the user can let these run without asking. */
-val LINUX_TOOLS = setOf("shell", "code_agent", "hermes_agent")
+val LINUX_TOOLS = setOf("shell", "code_agent", "hermes_agent", "claude_code")
 
 fun isSensitive(name: String, args: JsonObject, askPhone: Boolean, askLinux: Boolean = true): Boolean =
     name in ALWAYS_ASK || (askLinux && name in LINUX_TOOLS) ||
@@ -92,6 +92,8 @@ val TOOLS: JsonArray = buildJsonArray {
     add(tool("todo", "Write or update your step-by-step plan for a multi-step task.", listOf("items"), mapOf("items" to "Numbered steps, mark done with [x]")))
     add(tool("code_agent", "Multi-file coding in Ubuntu with Aider: creates/edits files in /root/projects/<project>.",
         listOf("task"), mapOf("project" to "Project folder name", "task" to "What to build or change")))
+    add(tool("claude_code", "Run Claude Code (installed in Ubuntu) headless on a coding task in /root/projects/<project>.",
+        listOf("task"), mapOf("project" to "Project folder name", "task" to "What to build or change", "model" to "syntra (on-device) or provider/model, e.g. deepseek/deepseek-chat")))
     add(tool("hermes_agent", "Hand a long, multi-step task to Hermes Agent running in Ubuntu (uses Syntra's models).",
         listOf("task"), mapOf("task" to "Complete task description")))
     add(tool("mcp_list_tools", "List tools on a connected MCP server.", listOf("server"), mapOf("server" to "Server name")))

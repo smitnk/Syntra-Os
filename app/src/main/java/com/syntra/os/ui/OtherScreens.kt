@@ -250,6 +250,26 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         }
 
         item {
+            Section("Speed") {
+                Text("Syntra keeps one model in RAM (8 GB phones) and gives each request only the tools it needs.", color = Dim, fontSize = 12.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("GPU acceleration (experimental)")
+                        Text("Runs the model on the Mali GPU via Vulkan. Can be faster at reading prompts; turn off if replies break.", color = Dim, fontSize = 12.sp)
+                    }
+                    Switch(s.useGpu, { vm.updateSettings(s.copy(useGpu = it)); vm.reloadModels() })
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("d1 router")
+                        Text("When keywords can't tell what a request needs, ask the d1 decision model. Swaps models on 8 GB, so it adds a few seconds.", color = Dim, fontSize = 12.sp)
+                    }
+                    Switch(s.useD1Router, { vm.updateSettings(s.copy(useD1Router = it)) })
+                }
+            }
+        }
+
+        item {
             Section("Linux & local API") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {

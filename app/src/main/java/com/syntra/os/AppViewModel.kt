@@ -188,6 +188,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         catch (e: Exception) { linuxStatus = "Install failed: ${e.message}" }
     }
 
+    // ---- Terminal AI mode: the coding harness drives Syntra's Linux from a prompt ----
+    var termAiProvider by mutableStateOf(com.syntra.os.core.ON_DEVICE)
+    var termAiModel by mutableStateOf("deepseek-chat")
+    var termBusy by mutableStateOf(false); private set
+    private var termJob: Job? = null
+
+    fun terminalAi(prompt: String) {
+        if (termBusy || prompt.isBlank()) return
+        linuxLines += "» $prompt"
+        val cloud = termAiProvider != com.syntra.os.core.ON_DEVICE
+        // Same agent, Code mode; for cloud, the lead slot points at the chosen provider/model for this run only.
+        val s = if (!cloud) settings else settings.copy(slots = settings.slots.map {
+            if (it.role == settings.primaryRole) it.copy(providerId = termAiProvider, model = termAiModel.trim()) else it })
+        termBusy = true
+        termJob = viewModelScope.launch {
+            val e = AgentEnv(getApplication(), s, skills, engines, { graph }, ::updateGraph, log = { st ->
+                val line = when (st.kind) {
+                    StepKind.TOOL_CALL -> "▸ ${st.who} ${st.text.take(220)}"
+                    StepKind.TOOL_RESULT -> st.text.lines().take(12).joinToString("\n") { "  $it" }
+                    else -> "· ${st.text.take(220)}"
+                }
+                mainHandler.post { line.lines().forEach { linuxLines += it } }
+            }, approve = ::askApproval)
+            try {
+                val answer = Agent(e).run(prompt, emptyList(), code = true)
+                answer.lines().forEach { linuxLines += "✓ $it" }
+            } catch (ex: CancellationException) { linuxLines += "[stopped]" }
+            catch (ex: Exception) { linuxLines += "✗ ${ex.message}" }
+            finally { termBusy = false; pendingApproval = null }
+        }
+    }
+
+    fun stopTerminalAi() { approval?.complete(false); engines.stopAll(); termJob?.cancel() }
+
+    fun installedLinuxTools() = com.syntra.os.device.Linux.installedTools(getApplication())
+
     // Starting a shell may probe proot variants (seconds), so never on the main thread.
     fun linuxSend(cmd: String) { linuxLines += "$ $cmd"; viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { linux.start(); linux.send(cmd) } }
     fun linuxRestart() { linux.stop(); linuxLines.clear(); viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { linux.start() } }
@@ -273,6 +309,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             installedTick++
         }
     }
+
+    /** Drop loaded models so the next request reloads them with new settings (e.g. GPU on/off). */
+    fun reloadModels() = engines.unloadAll()
 
     fun deleteModel(role: ModelRole) { models.delete(role); installedTick++ }
 

@@ -9,7 +9,7 @@ enum class Route(val tools: Set<String>) {
     CHAT(setOf()),
     WEB(setOf("web_search", "web_fetch", "scrape", "save_output")),
     PHONE(setOf("phone_screen", "phone_tap", "phone_type", "phone_swipe", "phone_action", "open_app", "list_apps", "read_notifications")),
-    CODE(setOf("shell", "file_list", "file_read", "file_write", "code_agent", "hermes_agent", "todo")),
+    CODE(setOf("shell", "file_list", "file_read", "file_write", "code_agent", "claude_code", "hermes_agent", "todo")),
     AUTOMATION(setOf("schedule_task", "list_schedules", "cancel_schedule", "http_request", "mcp_list_tools", "mcp_call")),
     GITHUB(setOf("github")),
     TEAM(setOf("ask_specialist", "consult_team")),

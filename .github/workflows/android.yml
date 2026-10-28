@@ -13,7 +13,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Build Syntra's own proot (Termux source + NDK, static talloc) and bundle as native libs
         run: |
-          bash .github/build-proot.sh > proot.log 2>&1 || { tail -40 proot.log | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
+          bash .github/build-proot.sh > proot.log 2>&1 || { { grep -nE "error|Error|fatal|No such|not found|undefined" proot.log | grep -v -- "-W" | head -25; tail -6 proot.log; } | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
           tail -12 proot.log
       - name: Build and test
         run: |

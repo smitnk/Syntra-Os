@@ -247,6 +247,8 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
             } finally { active = active - role }
         } }
 
+    fun unloadAll() { loaded.keys.toList().filter { !locks.getValue(it).isLocked }.forEach(::freeLoaded) }
+
     fun hasProjector(role: ModelRole) = models.installed(role)?.mmproj != null
 
     /** Scores [labels] with a classifier model (d1) — reads one distribution, generates nothing. */

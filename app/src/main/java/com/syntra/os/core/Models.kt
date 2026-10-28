@@ -31,6 +31,7 @@ val DEFAULT_PROVIDERS = listOf(
     Provider("openclaw", "OpenClaw Gateway", "http://127.0.0.1:18789/v1", agentModel = "openclaw"),
     Provider("hermes", "Hermes Agent", "http://127.0.0.1:8642/v1", agentModel = "hermes-agent"),
     Provider("openrouter", "OpenRouter", "https://openrouter.ai/api/v1"),
+    Provider("deepseek", "DeepSeek", "https://api.deepseek.com/v1"),
 )
 
 @Serializable

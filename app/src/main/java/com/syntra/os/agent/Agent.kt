@@ -196,6 +196,7 @@ class Agent(private val env: AgentEnv) {
         appendLine("Reply in short, plain sentences (they may be spoken). Never show JSON or tool markup.")
         if (code) appendLine("CODE MODE: you are a coding agent in Ubuntu (/root/projects). Loop: todo plan → write files with shell heredocs " +
             "or code_agent → run with shell → fix errors → repeat until it works. Then say what you built and how to run it.")
+        com.syntra.os.device.Linux.installedTools(env.context).takeIf { it.isNotEmpty() }?.let { appendLine("Installed in Linux: ${it.joinToString()}.") }
         append(os.context())
         val skills = skill?.let { listOf(it) } ?: env.skills.filter { it.enabled }
         skills.forEach { appendLine("\n## Skill: ${it.name}\n${it.prompt.take(1500)}") }
@@ -267,6 +268,15 @@ class Agent(private val env: AgentEnv) {
             check(com.syntra.os.device.Linux.installed(env.context)) { "Install Ubuntu, then Hermes, in the Linux tab" }
             com.syntra.os.device.Linux.run(env.context, "command -v hermes >/dev/null || { echo 'Hermes not installed (Linux tab → Hermes Agent)'; exit 1; }; " +
                 "hermes -q ${shQuote(a.str("task").orEmpty())} -Q", timeoutMs = 900_000)
+        }
+        "claude_code" -> {
+            check(com.syntra.os.device.Linux.installed(env.context)) { "Install Ubuntu, then Claude Code, in the Linux tab" }
+            val dir = "/root/projects/" + AgenticOs.slug(a.str("project") ?: "app").ifBlank { "app" }
+            val model = a.str("model")?.takeIf { it.isNotBlank() } ?: "syntra"
+            com.syntra.os.device.Linux.run(env.context, "mkdir -p $dir && cd $dir && command -v claude >/dev/null || " +
+                "{ echo 'Claude Code not installed (Linux tab → Claude Code)'; exit 1; }; " +
+                "MODEL=${shQuote(model)} claude-local -p ${shQuote(a.str("task").orEmpty())} --dangerously-skip-permissions 2>&1 | tail -80",
+                timeoutMs = 1_800_000)
         }
         "code_agent" -> {
             check(com.syntra.os.device.Linux.installed(env.context)) { "Install Ubuntu in the Linux tab first" }

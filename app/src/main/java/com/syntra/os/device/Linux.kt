@@ -75,6 +75,17 @@ object Linux {
         File(root, "usr/local/bin/ai").apply {
             writeText(AI_SCRIPT); setExecutable(true, false)
         }
+        // Harness wrappers: run each coding agent on Syntra's models. MODEL can be "syntra" (on-device) or "<provider>/<model>" (cloud).
+        val wrappers = mapOf(
+            // Claude Code through Syntra's Anthropic-compatible endpoint. Plain `claude` still uses your own Anthropic login.
+            "claude-local" to "#!/bin/sh\nexport ANTHROPIC_BASE_URL=http://127.0.0.1:${com.syntra.os.local.LocalServer.PORT}\n" +
+                "export ANTHROPIC_AUTH_TOKEN=\"\$OPENAI_API_KEY\"\nexport ANTHROPIC_MODEL=\"\${MODEL:-syntra}\"\n" +
+                "export ANTHROPIC_SMALL_FAST_MODEL=\"\${MODEL:-syntra}\"\nexec claude \"\$@\"\n",
+            "aider-local" to "#!/bin/sh\nexec aider --model \"openai/\${MODEL:-syntra}\" --no-show-model-warnings --no-check-update \"\$@\"\n",
+            // DeepSeek (or any cloud model) via Syntra's router; the key stays in Syntra, not in Linux.
+            "aider-deepseek" to "#!/bin/sh\nexec aider --model openai/deepseek/deepseek-chat --no-show-model-warnings --no-check-update \"\$@\"\n",
+        )
+        wrappers.forEach { (n, body) -> File(root, "usr/local/bin/$n").apply { writeText(body); setExecutable(true, false) } }
         File(root, "root/.hermes").mkdirs()
         File(root, "root/.hermes/config.yaml").takeIf { !it.exists() || it.readText().contains("# syntra-managed") }?.writeText("""
             # syntra-managed: Hermes uses Syntra's on-device model. Delete this line to manage the file yourself.
@@ -108,6 +119,8 @@ object Linux {
         "Aider (coding agent)" to "apt update && apt install -y python3 python3-pip git && pip3 install --break-system-packages aider-chat && echo 'Aider ready: aider --model openai/syntra'",
         "Scrapling" to "apt update && apt install -y python3 python3-pip && pip3 install --break-system-packages scrapling curl_cffi && echo 'Scrapling ready'",
         "Node.js" to "apt update && apt install -y nodejs npm",
+        "Claude Code" to "apt update && apt install -y nodejs npm git && npm install -g @anthropic-ai/claude-code && " +
+            "echo 'Claude Code ready: claude-local (Syntra models) or claude (your Anthropic account)'",
     )
 
     /** proot command line; [shell] runs after it. */
@@ -189,6 +202,22 @@ object Linux {
             if (!v.seccomp) put("PROOT_NO_SECCOMP", "1") else remove("PROOT_NO_SECCOMP")
         }
         return pb.redirectErrorStream(true)
+    }
+
+    /** What's installed in Syntra's Linux, so the app and the agent can offer and use it. */
+    fun installedTools(ctx: Context): List<String> {
+        val r = rootfs(ctx)
+        if (!installed(ctx)) return emptyList()
+        fun has(vararg paths: String) = paths.any { File(r, it).exists() }
+        return buildList {
+            if (has("usr/bin/python3")) add("python3")
+            if (has("usr/bin/git")) add("git")
+            if (has("usr/bin/node")) add("node")
+            if (has("root/.local/bin/hermes", "usr/local/bin/hermes")) add("hermes")
+            if (has("usr/local/bin/aider", "root/.local/bin/aider")) add("aider")
+            if (has("usr/local/bin/claude", "usr/bin/claude", "root/.local/bin/claude")) add("claude")
+            if (File(r, "usr/local/lib").walkTopDown().maxDepth(4).any { it.name == "scrapling" }) add("scrapling")
+        }
     }
 
     /** proot command line using the variant that works on this phone; [shell] runs inside Ubuntu. */

@@ -94,7 +94,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val tabs = listOf(
                     "Syntra" to Icons.Outlined.AutoAwesome, "Memory" to Icons.Outlined.Hub,
-                    "Tasks" to Icons.Outlined.TaskAlt, "Linux" to Icons.Outlined.Terminal, "Skills" to Icons.Outlined.Extension, "Setup" to Icons.Outlined.Settings,
+                    "Tasks" to Icons.Outlined.TaskAlt, "Terminal" to Icons.Outlined.Terminal, "Skills" to Icons.Outlined.Extension, "Setup" to Icons.Outlined.Settings,
                 )
                 Scaffold(
                     containerColor = Bg,
