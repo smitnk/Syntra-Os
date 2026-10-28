@@ -166,7 +166,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                                 files != null -> "${r.label} · ${files.model.length() / 1_000_000} MB" + (if (files.mmproj != null) " + projector" else "") +
                                     (if (vm.engines.isLoaded(r)) " · loaded" else "")
                                 else -> "${r.label} · not downloaded"
-                            }, color = if (dl?.startsWith("Failed") == true) Danger else Dim, fontSize = 12.sp)
+                            } + if (r == ModelRole.DECISION) " · classifier, not used for chat" else "", color = if (dl?.startsWith("Failed") == true) Danger else Dim, fontSize = 12.sp)
                         }
                         when {
                             dl != null -> {}
@@ -250,14 +250,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         }
 
         item {
-            Section("Team & Linux") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Team planning")
-                        Text("The decision model plans first, the vision model reads images, then the lead acts.", color = Dim, fontSize = 12.sp)
-                    }
-                    Switch(s.teamPlanning, { vm.updateSettings(s.copy(teamPlanning = it)) })
-                }
+            Section("Linux & local API") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Ask before Linux commands")
@@ -289,7 +282,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     ModelRole.entries.take(3).forEach { r -> FilterChip(s.primaryRole == r, { vm.updateSettings(s.copy(primaryRole = r)) }, { Text(r.name.lowercase()) }) }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ModelRole.entries.drop(3).forEach { r -> FilterChip(s.primaryRole == r, { vm.updateSettings(s.copy(primaryRole = r)) }, { Text(r.name.lowercase()) }) }
+                    ModelRole.entries.drop(3).filter { it != ModelRole.DECISION }.forEach { r -> FilterChip(s.primaryRole == r, { vm.updateSettings(s.copy(primaryRole = r)) }, { Text(r.name.lowercase()) }) }
                 }
                 s.slots.forEach { slot ->
                     Text(slot.role.label, color = Violet, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))

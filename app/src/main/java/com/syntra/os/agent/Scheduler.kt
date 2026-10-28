@@ -73,7 +73,7 @@ class AgentWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
         var graph = store.load("graph", Graph.serializer(), Graph())
         val steps = mutableListOf<Step>()
         val env = AgentEnv(app, store.load("settings", Settings.serializer(), Settings()),
-            store.load("skills", ListSerializer(Skill.serializer()), Skills.builtIn), LocalEngines(ModelManager(app.filesDir)),
+            store.load("skills", ListSerializer(Skill.serializer()), Skills.builtIn), LocalEngines(ModelManager(app.filesDir), app),
             { graph }, { graph = it; store.save("graph", Graph.serializer(), it) }, { steps += it }, approve = { false })
         val (status, text) = try {
             TaskStatus.DONE to Agent(env).run(goal, emptyList())

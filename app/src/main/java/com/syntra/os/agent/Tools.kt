@@ -54,7 +54,7 @@ val TOOLS: JsonArray = buildJsonArray {
             "notes" to "Facts to remember", "related_to" to "Label of an existing entity to link", "relation" to "Relation name, e.g. works_on")))
     add(tool("memory_link", "Link two existing entities.", listOf("from", "to", "relation"),
         mapOf("from" to "Label", "to" to "Label", "relation" to "Relation name")))
-    add(tool("ask_specialist", "Ask one teammate model. Roles: TEXT, VISION (sees the attached image), AUDIO, OMNI, DECISION.",
+    add(tool("ask_specialist", "Ask one teammate model. Roles: TEXT, VISION (sees the attached image), OMNI.",
         listOf("role", "question"), mapOf("role" to "Model role", "question" to "Self-contained question")))
     add(tool("consult_team", "Ask several teammate models the same question at once; they answer in parallel.",
         listOf("roles", "question"), mapOf("roles" to "Comma-separated roles, e.g. VISION,DECISION", "question" to "Self-contained question")))

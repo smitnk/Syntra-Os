@@ -156,32 +156,51 @@ object LfmPrompt {
  * models generate truly in parallel while one model serves one request at a time.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-class LocalEngines(private val models: ModelManager) {
+class LocalEngines(private val models: ModelManager, private val ctx: android.content.Context) {
     private class Loaded(val handle: Long, val media: Boolean, var lastUse: Long, val cpFile: java.io.File) { var bg: Long = 0 }
     private val loaded = java.util.concurrent.ConcurrentHashMap<ModelRole, Loaded>()
     private val locks = ModelRole.entries.associateWith { Mutex() }
     private val bgLocks = ModelRole.entries.associateWith { Mutex() }
     private val loadLock = Mutex()
-    private val pool = Dispatchers.Default.limitedParallelism(ModelRole.entries.size * 2)
+    /**
+     * One generation at a time across all models. On a phone, two 2B models decoding together saturate
+     * CPU and RAM and can starve System UI (the v0.6 freeze). "Parallel" teammates take turns instead.
+     */
+    private val compute = Mutex()
+    private val pool = Dispatchers.Default.limitedParallelism(2)
     /** Roles currently generating; the UI lights these up. */
     @Volatile var active: Set<ModelRole> = emptySet(); private set
 
     fun installedRoles() = ModelRole.entries.filter { models.installed(it) != null }
 
+    private fun memInfo() = android.app.ActivityManager.MemoryInfo().also {
+        ctx.getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(it)
+    }
+
+    private fun freeLoaded(r: ModelRole) { loaded.remove(r)?.let { l -> if (l.bg != 0L) LlamaNative.free(l.bg); LlamaNative.free(l.handle) } }
+
     private suspend fun engine(role: ModelRole): Loaded = loadLock.withLock {
         loaded[role]?.let { it.lastUse = System.currentTimeMillis(); return it }
         val files = models.installed(role) ?: error("${role.label} model not downloaded — open Setup → On-device models")
-        // shortcut: keep at most 2 models resident (~2.5 GB) to avoid low-memory kills; raise on 16 GB phones.
-        if (loaded.size >= 2) loaded.entries.filter { !locks.getValue(it.key).isLocked && !bgLocks.getValue(it.key).isLocked }
-            .minByOrNull { it.value.lastUse }?.let { (r, l) -> loaded.remove(r); if (l.bg != 0L) LlamaNative.free(l.bg); LlamaNative.free(l.handle) }
-        val cores = Runtime.getRuntime().availableProcessors()
-        // Generation is memory-bound: big cores only. Prompt reading is compute-bound: all cores.
-        val gen = if (cores >= 8) 4 else 2
-        val h = withContext(pool) { LlamaNative.load(files.model.path, files.mmproj?.path, 8192, gen, cores) }
+        val need = files.model.length() + (files.mmproj?.length() ?: 0) + 600_000_000L // weights + KV/compute buffers
+        // Phones under ~11 GB keep one model in RAM; bigger phones two.
+        val maxResident = if (memInfo().totalMem > 11_000_000_000L) 2 else 1
+        while (loaded.size >= maxResident || (loaded.isNotEmpty() && memInfo().availMem - need < 1_500_000_000L)) {
+            val victim = loaded.entries.filter { !locks.getValue(it.key).isLocked && !bgLocks.getValue(it.key).isLocked }
+                .minByOrNull { it.value.lastUse }?.key ?: break
+            freeLoaded(victim)
+        }
+        if (memInfo().availMem - need < 1_000_000_000L)
+            error("Not enough free memory to load ${role.defaultModel} — close some apps and try again.")
+        val threads = if (Runtime.getRuntime().availableProcessors() >= 8) 4 else 2 // big cores only; leave the rest for the UI
+        val h = withContext(pool) { background(); LlamaNative.load(files.model.path, files.mmproj?.path, 4096, threads, threads) }
         val cp = java.io.File(files.model.parentFile, "checkpoint.bin")
         withContext(pool) { LlamaNative.loadCheckpoint(h, cp.path) }
         Loaded(h, LlamaNative.hasMedia(h), System.currentTimeMillis(), cp).also { loaded[role] = it }
     }
+
+    /** Inference threads run at background priority so taps, scrolling and System UI always win. */
+    private fun background() = android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
 
     /**
      * [background] runs on a second context over the same weights, so memory extraction and
@@ -189,10 +208,11 @@ class LocalEngines(private val models: ModelManager) {
      */
     suspend fun complete(role: ModelRole, messages: List<JsonObject>, tools: JsonArray?, media: String?, onText: ((String) -> Unit)?,
                          background: Boolean = false, maxTokens: Int = 512): ChatReply =
-        (if (background) bgLocks else locks).getValue(role).withLock {
+        (if (background) bgLocks else locks).getValue(role).withLock { compute.withLock {
+            require(role != ModelRole.DECISION) { "d1 is a decision/classifier model and can't write text — use Text or Omni as the lead" }
             val e = engine(role)
             val handle = if (!background) e.handle else {
-                if (e.bg == 0L) e.bg = withContext(pool) { LlamaNative.fork(e.handle, 2048, 2) }
+                if (e.bg == 0L) e.bg = withContext(pool) { background(); LlamaNative.fork(e.handle, 2048, 2) }
                 e.bg
             }
             val useMedia = media?.takeIf { e.media && !background }
@@ -201,10 +221,13 @@ class LocalEngines(private val models: ModelManager) {
             try {
                 val buf = ByteArrayOutputStream()
                 var lastPush = 0L
+                val started = System.currentTimeMillis()
                 val bytes = withContext(pool) {
+                    background()
                     LlamaNative.generate(handle, p.text, useMedia, maxTokens, { piece ->
                         buf.write(piece)
                         val now = System.currentTimeMillis()
+                        if (now - started > 180_000) return@generate false // hard stop: a reply never runs past 3 minutes
                         if (onText != null && now - lastPush > 120) { lastPush = now; onText(buf.toString(Charsets.UTF_8.name())) }
                         true
                     }, if (background) 0 else p.stableBytes)
@@ -212,7 +235,7 @@ class LocalEngines(private val models: ModelManager) {
                 if (!background) withContext(pool) { LlamaNative.saveCheckpoint(handle, e.cpFile.path) }
                 LfmPrompt.parse(String(bytes, Charsets.UTF_8))
             } finally { active = active - role }
-        }
+        } }
 
     fun stopAll() = loaded.values.toList().forEach { LlamaNative.stop(it.handle); if (it.bg != 0L) LlamaNative.stop(it.bg) }
     fun isLoaded(role: ModelRole) = loaded.containsKey(role)

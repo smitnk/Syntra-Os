@@ -62,7 +62,10 @@ fun LinuxScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                 Text("Linux", style = MaterialTheme.typography.headlineSmall, color = Ink)
                 Text("Ubuntu 24.04 inside Syntra. ai, Hermes and Aider here use Syntra's local models (or cloud).", color = Dim, fontSize = 12.sp)
             }
-            if (vm.linuxInstalled) IconButton(vm::linuxRestart) { Icon(Icons.Outlined.RestartAlt, "Restart shell", tint = Dim) }
+            if (vm.linuxInstalled) {
+                androidx.compose.material3.TextButton(vm::linuxReprobe) { Text("Repair", color = Clay) }
+                IconButton(vm::linuxRestart) { Icon(Icons.Outlined.RestartAlt, "Restart shell", tint = Dim) }
+            }
         }
         Spacer(Modifier.height(12.dp))
         when {

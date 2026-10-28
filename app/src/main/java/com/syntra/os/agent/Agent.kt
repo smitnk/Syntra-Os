@@ -79,6 +79,7 @@ class Agent(private val env: AgentEnv) {
 
     /** A role can answer if its model is downloaded (on-device) or its cloud provider is configured. */
     fun available(role: ModelRole): Boolean {
+        if (role == ModelRole.DECISION) return false // d1 classifies (yes/no, labels); it can't write text
         val p = settings.provider(settings.slot(role).providerId) ?: return false
         return if (p.local) env.engines.installedRoles().contains(role) else p.apiKey.isNotBlank() || "127.0.0.1" in p.baseUrl
     }
@@ -115,8 +116,8 @@ class Agent(private val env: AgentEnv) {
     }
 
     /**
-     * Team pre-step, in parallel: the VISION model looks at an attached image, and the DECISION model
-     * drafts a plan for multi-step requests. Their output goes to the lead model as context.
+     * Team pre-step: the VISION (or OMNI) model looks at an attached image and briefs the lead model.
+     * (The d1 decision model is a classifier, so it never plans or writes text.)
      */
     private suspend fun teamBriefing(goal: String, image: String?): String = coroutineScope {
         val vision = if (image != null) listOf(ModelRole.VISION, ModelRole.OMNI).firstOrNull { available(it) }?.let { r ->
@@ -125,14 +126,7 @@ class Agent(private val env: AgentEnv) {
                 callModel(env, r, listOf(message("user", "Describe this image in detail for a teammate who cannot see it. Include any text.")), null, image, null).content
             }.getOrElse { "(vision failed: ${it.message})" } }
         } else null
-        val wantsPlan = settings.teamPlanning && goal.length > 40 && available(ModelRole.DECISION) && settings.primaryRole != ModelRole.DECISION
-        val plan = if (wantsPlan) async { runCatching {
-            env.log(Step(StepKind.THOUGHT, settings.slot(ModelRole.DECISION).model, "Planning…"))
-            "\n\n[Plan from the decision teammate]\n" + callModel(env, ModelRole.DECISION, listOf(message("user",
-                "Write a short numbered plan (max 5 steps) of tool actions for an agent to do this. Tools: web_search, web_fetch, " +
-                "open_app, phone_screen, phone_tap, shell, file_write, code_agent, schedule_task, mcp tools. Request: $goal")), null, null, null).content
-        }.getOrDefault("") } else null
-        (vision?.await().orEmpty()) + (plan?.await().orEmpty())
+        vision?.await().orEmpty()
     }
 
     private suspend fun loadMcpTools(): List<JsonObject> = coroutineScope {
@@ -187,7 +181,7 @@ class Agent(private val env: AgentEnv) {
         appendLine("Examples: news/facts → web_search then web_fetch or scrape; 'open X' → open_app; screen → phone_screen; code/apps/files → shell or code_agent; " +
             "YouTube/Instagram/Gmail/Sheets/other apps online → the zapier mcp__ tools; repeat later → schedule_task; user corrects you → learn.")
         appendLine("Your shell is a real Ubuntu Linux (apt, python, git). The agentic-os folder (context, memory, outputs) is at /root/agentic-os.")
-        appendLine("Team: ask_specialist / consult_team reach the other LFM models (vision, audio, omni, decision); several run in parallel.")
+        appendLine("Team: ask_specialist / consult_team reach the other downloaded LFM models (vision, omni); they take turns on the phone.")
         appendLine("Answer in plain, natural sentences — never raw JSON or tool markup. Keep answers short; they may be spoken aloud.")
         if (code) {
             appendLine("\n## CODE MODE (harness)")
@@ -359,7 +353,7 @@ class Agent(private val env: AgentEnv) {
     private suspend fun askSpecialist(roleName: String, question: String): String {
         val asked = ModelRole.entries.firstOrNull { it.name.equals(roleName, true) } ?: error("unknown role $roleName")
         // If that teammate isn't downloaded, the nearest available one answers instead of failing the task.
-        val role = asked.takeIf { available(it) } ?: listOf(ModelRole.OMNI, ModelRole.DECISION, ModelRole.TEXT, ModelRole.VISION)
+        val role = asked.takeIf { available(it) } ?: listOf(ModelRole.OMNI, ModelRole.TEXT, ModelRole.VISION)
             .firstOrNull { available(it) } ?: error("no teammate model is available — download one in Setup")
         val slot = settings.slot(role)
         val board = synchronized(blackboard) { blackboard.toString().takeLast(2000) }

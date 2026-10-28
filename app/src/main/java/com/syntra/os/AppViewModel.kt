@@ -37,7 +37,7 @@ import kotlinx.serialization.json.jsonObject
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = Store(app.filesDir)
     val models = ModelManager(app.filesDir)
-    val engines = LocalEngines(models)
+    val engines = LocalEngines(models, app)
 
     var settings by mutableStateOf(migrate(store.load("settings", Settings.serializer(), Settings()))); private set
     var graph by mutableStateOf(store.load("graph", Graph.serializer(), Graph())); private set
@@ -100,7 +100,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Older installs lack the on-device / OpenClaw / Hermes providers. */
-    private fun migrate(s: Settings): Settings {
+    private fun migrate(s0: Settings): Settings {
+        val s = if (s0.primaryRole == ModelRole.DECISION) s0.copy(primaryRole = ModelRole.TEXT) else s0 // d1 can't chat
         val missing = DEFAULT_PROVIDERS.filter { d -> s.providers.none { it.id == d.id } }
         return if (missing.isEmpty()) s else s.copy(providers = missing + s.providers)
     }
@@ -179,13 +180,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         try {
             com.syntra.os.device.Linux.install(getApplication()) { linuxStatus = it }
             com.syntra.os.device.Linux.configure(getApplication(), settings.localApiKey)
-            linuxInstalled = true; linux.start()
+            linuxInstalled = true
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { linux.start() }
         }
         catch (e: Exception) { linuxStatus = "Install failed: ${e.message}" }
     }
 
-    fun linuxSend(cmd: String) { linuxLines += "$ $cmd"; linux.start(); linux.send(cmd) }
-    fun linuxRestart() { linux.stop(); linuxLines.clear(); linux.start() }
+    // Starting a shell may probe proot variants (seconds), so never on the main thread.
+    fun linuxSend(cmd: String) { linuxLines += "$ $cmd"; viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { linux.start(); linux.send(cmd) } }
+    fun linuxRestart() { linux.stop(); linuxLines.clear(); viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { linux.start() } }
+    /** Forget the chosen proot variant and probe again (shows what each variant printed). */
+    fun linuxReprobe() {
+        linux.stop(); linuxLines.clear()
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.syntra.os.device.Linux.resetVariant(getApplication())
+            val v = com.syntra.os.device.Linux.variant(getApplication())
+            mainHandler.post { linuxLines += "[setup] using ${v.name}"; com.syntra.os.device.Linux.lastProbe.lines().filter { it.isNotBlank() }.forEach { linuxLines += "[probe] $it" } }
+            linux.start()
+        }
+    }
 
     override fun onCleared() { linux.stop(); server.stop(); super.onCleared() }
 

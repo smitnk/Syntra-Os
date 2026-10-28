@@ -111,23 +111,87 @@ object Linux {
     )
 
     /** proot command line; [shell] runs after it. */
-    fun process(ctx: Context, shell: List<String>): ProcessBuilder {
+    /** A way of running proot. Which one works depends on the phone's kernel and Android seccomp policy. */
+    enum class Variant(val bin: String, val loader: String, val termux: Boolean, val seccomp: Boolean) {
+        TERMUX("libproot.so", "libproot-loader.so", true, true),
+        TERMUX_NO_SECCOMP("libproot.so", "libproot-loader.so", true, false),
+        ANDROID_APP("libproot-gg.so", "libproot-gg-loader.so", false, false),
+    }
+
+    @Volatile private var chosen: Variant? = null
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("linux", Context.MODE_PRIVATE)
+    var lastProbe = ""; private set
+
+    /**
+     * Tries each variant on a command that exercises what broke before (cd, /proc/sys reads, apt's
+     * libgcrypt fips check) and remembers the first that works.
+     */
+    fun variant(ctx: Context): Variant {
+        chosen?.let { return it }
+        prefs(ctx).getString("variant", null)?.let { n -> Variant.entries.firstOrNull { it.name == n }?.let { chosen = it; return it } }
+        val log = StringBuilder()
+        for (v in Variant.entries) {
+            if (!lib(ctx, v.bin).exists()) continue
+            val r = runCatching {
+                val p = build(ctx, v, listOf("/bin/sh", "-c", "cd /root && cat /proc/sys/crypto/fips_enabled && echo SYNTRA_OK")).start()
+                val out = StringBuffer()
+                val t = Thread { runCatching { p.inputStream.bufferedReader().forEachLine { out.appendLine(it) } } }.apply { start() }
+                if (!p.waitFor(30, TimeUnit.SECONDS)) p.destroyForcibly() // a hung variant must not block the others
+                t.join(2000); "exit ${runCatching { p.exitValue() }.getOrDefault(-1)} $out"
+            }.getOrElse { "error: ${it.message}" }
+            log.appendLine("${v.name}: ${r.trim().takeLast(160)}")
+            if ("SYNTRA_OK" in r) { chosen = v; prefs(ctx).edit().putString("variant", v.name).apply(); lastProbe = log.toString(); return v }
+        }
+        lastProbe = log.toString()
+        return Variant.TERMUX_NO_SECCOMP.also { chosen = it } // nothing passed; keep the most compatible and show the log
+    }
+
+    fun resetVariant(ctx: Context) { chosen = null; prefs(ctx).edit().remove("variant").apply() }
+
+    /** Fake files for /proc entries Android hides from apps (the same set proot-distro provides, plus fips_enabled). */
+    private fun fakeProc(ctx: Context): List<String> {
+        val dir = File(ctx.filesDir, "ubuntu-sys").apply { mkdirs() }
+        val files = mapOf(
+            "loadavg" to "0.12 0.07 0.02 2/165 765\n",
+            "uptime" to "124.08 932.80\n",
+            "version" to "Linux version 6.17.0-PRoot-Distro (proot@termux) #1 SMP PREEMPT_DYNAMIC Fri, 10 Oct 2025 00:00:00 +0000\n",
+            "vmstat" to "nr_free_pages 1743136\nnr_zone_inactive_anon 179281\nnr_zone_active_anon 7183\n",
+            "stat" to "cpu  1957 0 2877 93280 262 342 254 87 0 0\ncpu0 31 0 226 12027 82 10 4 9 0 0\nintr 0\nctxt 0\nbtime 1700000000\nprocesses 1\nprocs_running 1\nprocs_blocked 0\n",
+            "cap_last_cap" to "40\n", "max_user_watches" to "4096\n", "overflowuid" to "65534\n", "overflowgid" to "65534\n",
+            "fips_enabled" to "0\n",
+        )
+        files.forEach { (n, c) -> File(dir, n).takeIf { !it.exists() }?.writeText(c) }
+        val target = mapOf("loadavg" to "/proc/loadavg", "uptime" to "/proc/uptime", "version" to "/proc/version", "vmstat" to "/proc/vmstat",
+            "stat" to "/proc/stat", "cap_last_cap" to "/proc/sys/kernel/cap_last_cap", "max_user_watches" to "/proc/sys/fs/inotify/max_user_watches",
+            "overflowuid" to "/proc/sys/kernel/overflowuid", "overflowgid" to "/proc/sys/kernel/overflowgid", "fips_enabled" to "/proc/sys/crypto/fips_enabled")
+        return target.flatMap { (n, t) -> listOf("-b", "${File(dir, n).path}:$t") }
+    }
+
+    private fun build(ctx: Context, v: Variant, shell: List<String>): ProcessBuilder {
         val tmp = File(ctx.cacheDir, "proot-tmp").apply { mkdirs() }
-        val pb = ProcessBuilder(listOf(lib(ctx, "libproot.so").path, "-0", "--link2symlink", "--kill-on-exit",
-            "-r", rootfs(ctx).path, "-b", "/dev", "-b", "/proc", "-b", "/sys",
-            // The agentic-OS folder (context, memory, outputs) is shared between the app and Ubuntu.
-            "-b", File(ctx.filesDir, "agentic-os").apply { mkdirs() }.path + ":/root/agentic-os", "-w", "/root",
-            "/usr/bin/env", "-i", "HOME=/root", "TERM=xterm-256color", "LANG=C.UTF-8",
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin") + shell)
+        val shm = File(ctx.cacheDir, "proot-shm").apply { mkdirs() }
+        val args = mutableListOf(lib(ctx, v.bin).path, "-0", "--link2symlink")
+        // proot-distro's Termux flags: kill children on exit, SysV IPC emulation, fake kernel release, lstat fix.
+        if (v.termux) args += listOf("--kill-on-exit", "--sysvipc", "-L", "--kernel-release=6.17.0-PRoot-Distro")
+        args += listOf("-r", rootfs(ctx).path, "-b", "/dev", "-b", "/proc", "-b", "/sys",
+            "-b", "/dev/urandom:/dev/random", "-b", "/proc/self/fd:/dev/fd", "-b", "${shm.path}:/dev/shm")
+        args += fakeProc(ctx)
+        // The agentic-OS folder (context, memory, outputs) is shared between the app and Ubuntu.
+        args += listOf("-b", File(ctx.filesDir, "agentic-os").apply { mkdirs() }.path + ":/root/agentic-os", "-w", "/root",
+            "/usr/bin/env", "-i", "HOME=/root", "USER=root", "TERM=xterm-256color", "LANG=C.UTF-8", "TMPDIR=/tmp",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        val pb = ProcessBuilder(args + shell)
         pb.environment().apply {
-            put("PROOT_LOADER", lib(ctx, "libproot-loader.so").path)
+            put("PROOT_LOADER", lib(ctx, v.loader).path)
             put("PROOT_TMP_DIR", tmp.path)
             put("LD_LIBRARY_PATH", ctx.applicationInfo.nativeLibraryDir)
-            // Seccomp acceleration makes proot exit silently on some Android kernels; plain ptrace is reliable.
-            put("PROOT_NO_SECCOMP", "1")
+            if (!v.seccomp) put("PROOT_NO_SECCOMP", "1") else remove("PROOT_NO_SECCOMP")
         }
         return pb.redirectErrorStream(true)
     }
+
+    /** proot command line using the variant that works on this phone; [shell] runs inside Ubuntu. */
+    fun process(ctx: Context, shell: List<String>): ProcessBuilder = build(ctx, variant(ctx), shell)
 
     /** One-shot command for the agent. */
     suspend fun run(ctx: Context, command: String, timeoutMs: Long = 180_000): String = withContext(Dispatchers.IO) {
