@@ -168,5 +168,5 @@ class LocalEngines(private val models: ModelManager) {
         }
 
     fun stopAll() = loaded.values.toList().forEach { LlamaNative.stop(it.handle) }
-    fun isLoaded(role: ModelRole) = role in loaded
+    fun isLoaded(role: ModelRole) = loaded.containsKey(role)
 }
