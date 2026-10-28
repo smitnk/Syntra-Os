@@ -35,7 +35,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.AddComment
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.Button
@@ -183,6 +185,8 @@ private fun ModeSwitch(voiceOn: Boolean, state: VoiceState, onChange: (Boolean) 
 @Composable
 fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean) -> Unit, onAttach: () -> Unit, modifier: Modifier = Modifier) {
     var input by remember { mutableStateOf("") }
+    var showHistory by remember { mutableStateOf(false) }
+    if (showHistory) HistorySheet(vm) { showHistory = false }
     val list = rememberLazyListState()
     val count = vm.chat.size + if (vm.busy) 1 else 0
     LaunchedEffect(count, vm.streaming.length / 80) { if (count > 0) list.animateScrollToItem(count - 1) }
@@ -191,9 +195,10 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean
 
     Column(modifier.fillMaxSize().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton({ showHistory = true }) { Icon(Icons.Outlined.History, "Chat history", tint = Ink) }
             Text("Syntra", style = MaterialTheme.typography.headlineSmall, color = Ink, modifier = Modifier.weight(1f))
             ModeSwitch(vm.settings.alwaysListening, vm.voiceState, onToggleVoice)
-            IconButton(vm::clearChat) { Icon(Icons.Outlined.DeleteSweep, "Clear conversation", tint = Dim) }
+            IconButton(vm::newChat) { Icon(Icons.Outlined.AddComment, "New chat", tint = Ink) }
         }
 
         if (empty) {
@@ -281,6 +286,34 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean
                 vm.busy -> FilledIconButton(vm::cancel, Modifier.size(48.dp), colors = btn) { Icon(Icons.Outlined.Stop, "Stop") }
                 input.isBlank() -> FilledIconButton(onMic, Modifier.size(48.dp), colors = btn) { Icon(Icons.Outlined.Mic, "Talk now") }
                 else -> FilledIconButton({ vm.send(input); input = "" }, Modifier.size(48.dp), colors = btn) { Icon(Icons.AutoMirrored.Outlined.Send, "Send") }
+            }
+        }
+    }
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun HistorySheet(vm: AppViewModel, onClose: () -> Unit) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onClose, containerColor = Panel) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Chats", style = MaterialTheme.typography.headlineSmall, color = Ink, modifier = Modifier.weight(1f))
+                Button({ vm.newChat(); onClose() }, colors = ButtonDefaults.buttonColors(containerColor = Clay)) { Text("New chat", color = Bg) }
+            }
+            Spacer(Modifier.height(12.dp))
+            if (vm.sessions.isEmpty()) Text("No saved chats yet.", color = Dim)
+            LazyColumn(Modifier.fillMaxWidth().height(420.dp)) {
+                items(vm.sessions, key = { it.id }) { c ->
+                    Row(Modifier.fillMaxWidth().clickable { vm.openChat(c.id); onClose() }.padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(c.title, color = Ink, maxLines = 1, style = MaterialTheme.typography.titleMedium)
+                            Text(java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+                                .format(java.util.Date(c.updated)) + " · ${c.steps.size} messages", color = Dim, fontSize = 12.sp)
+                        }
+                        IconButton({ vm.deleteChat(c.id) }) { Icon(Icons.Outlined.Delete, "Delete chat", tint = Dim) }
+                    }
+                }
             }
         }
     }

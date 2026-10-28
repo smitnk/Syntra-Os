@@ -43,6 +43,8 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+    // proot and its loader are real executables shipped as lib*.so; they must be unpacked to run.
+    packaging { jniLibs { useLegacyPackaging = true } }
 }
 
 dependencies {

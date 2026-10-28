@@ -54,6 +54,8 @@ val TOOLS: JsonArray = buildJsonArray {
         listOf("role", "question"), mapOf("role" to "Model role", "question" to "Self-contained question")))
     add(tool("consult_team", "Ask several teammate models the same question at once; they answer in parallel.",
         listOf("roles", "question"), mapOf("roles" to "Comma-separated roles, e.g. VISION,DECISION", "question" to "Self-contained question")))
+    add(tool("web_search", "Search the web (DuckDuckGo). Use for news, facts, anything current. Then web_fetch the best result.",
+        listOf("query"), mapOf("query" to "Search words")))
     add(tool("web_fetch", "Fetch a web page and return its title, main text and links.", listOf("url"), mapOf("url" to "http(s) URL")))
     add(tool("phone_screen", "Read what is on the phone screen right now as a numbered list.", emptyList(), emptyMap()))
     add(tool("phone_tap", "Tap a screen item by its [number] or visible text.", listOf("target"), mapOf("target" to "Item number or text")))
@@ -62,7 +64,7 @@ val TOOLS: JsonArray = buildJsonArray {
     add(tool("phone_action", "Press a system button.", listOf("action"), mapOf("action" to "back|home|recents|notifications|quick_settings")))
     add(tool("open_app", "Open an installed app by name.", listOf("name"), mapOf("name" to "App name")))
     add(tool("list_apps", "List installed apps.", emptyList(), emptyMap()))
-    add(tool("shell", "Run a bash command in Termux on this phone.", listOf("command"), mapOf("command" to "Shell command")))
+    add(tool("shell", "Run a bash command in the built-in Ubuntu Linux (apt, python, git, curl…).", listOf("command"), mapOf("command" to "Shell command")))
     add(tool("file_list", "List files in Syntra's workspace folder.", emptyList(), mapOf("path" to "Sub-folder, optional")))
     add(tool("file_read", "Read a text file from the workspace.", listOf("path"), mapOf("path" to "Relative path")))
     add(tool("file_write", "Write a text file in the workspace.", listOf("path", "content"), mapOf("path" to "Relative path", "content" to "File content")))

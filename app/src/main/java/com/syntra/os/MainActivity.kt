@@ -16,6 +16,7 @@ import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.TaskAlt
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -28,6 +29,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.sp
 import com.syntra.os.ui.AssistantScreen
 import com.syntra.os.ui.Bg
 import com.syntra.os.ui.Clay
@@ -90,7 +92,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val tabs = listOf(
                     "Syntra" to Icons.Outlined.AutoAwesome, "Memory" to Icons.Outlined.Hub,
-                    "Tasks" to Icons.Outlined.TaskAlt, "Skills" to Icons.Outlined.Extension, "Setup" to Icons.Outlined.Settings,
+                    "Tasks" to Icons.Outlined.TaskAlt, "Linux" to Icons.Outlined.Terminal, "Skills" to Icons.Outlined.Extension, "Setup" to Icons.Outlined.Settings,
                 )
                 Scaffold(
                     containerColor = Bg,
@@ -99,7 +101,7 @@ class MainActivity : ComponentActivity() {
                             tabs.forEachIndexed { i, (label, icon) ->
                                 NavigationBarItem(
                                     selected = tab == i, onClick = { tab = i },
-                                    icon = { Icon(icon, contentDescription = label) }, label = { Text(label) },
+                                    icon = { Icon(icon, contentDescription = label) }, label = { Text(label, fontSize = 11.sp, maxLines = 1) },
                                     colors = NavigationBarItemDefaults.colors(indicatorColor = Raised, selectedIconColor = Clay,
                                         selectedTextColor = Clay, unselectedIconColor = Dim, unselectedTextColor = Dim),
                                 )
@@ -118,7 +120,8 @@ class MainActivity : ComponentActivity() {
                             modifier = m)
                         1 -> MemoryScreen(vm, m)
                         2 -> TasksScreen(vm, m)
-                        3 -> SkillsScreen(vm, m)
+                        3 -> com.syntra.os.ui.LinuxScreen(vm, m)
+                        4 -> SkillsScreen(vm, m)
                         else -> SettingsScreen(vm, m)
                     }
                 }

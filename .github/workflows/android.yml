@@ -11,6 +11,22 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
+      - name: Bundle proot (Termux build) as native libs
+        run: |
+          sudo apt-get install -y -qq patchelf >/dev/null
+          set -e
+          M=https://packages.termux.dev/apt/termux-main
+          curl -fsSL $M/dists/stable/main/binary-aarch64/Packages -o Packages || { M=https://cdimage.debian.org/mirror/termux.dev/apt/termux-main; curl -fsSL $M/dists/stable/main/binary-aarch64/Packages -o Packages; }
+          deb() { awk -v p="$1" '$1=="Package:"{x=($2==p)} x&&$1=="Filename:"{print $2; exit}' Packages; }
+          mkdir -p t && for p in proot libtalloc; do f=$(deb $p); echo "$p -> $f"; curl -fsSL "$M/$f" -o $p.deb; dpkg-deb -x $p.deb t; done
+          U=t/data/data/com.termux/files/usr
+          J=app/src/main/jniLibs/arm64-v8a; mkdir -p $J
+          cp $U/bin/proot $J/libproot.so
+          cp $(ls $U/lib/libtalloc.so.* | head -1) $J/libtalloc.so
+          cp $U/libexec/proot/loader $J/libproot-loader.so
+          patchelf --replace-needed libtalloc.so.2 libtalloc.so --remove-rpath $J/libproot.so
+          patchelf --set-soname libtalloc.so $J/libtalloc.so
+          ls -la $J
       - name: Build and test
         run: |
           set -o pipefail
@@ -23,7 +39,7 @@ jobs:
           mkdir out
           cp app/build/outputs/apk/full/debug/*.apk out/SyntraOS-full.apk
           cp app/build/outputs/apk/lite/debug/*.apk out/SyntraOS-lite.apk
-          for a in out/*.apk; do unzip -l "$a" | grep -q 'lib/arm64-v8a/libsyntra_llm.so' || { echo "native lib missing in $a"; exit 1; }; done
+          for a in out/*.apk; do for l in libsyntra_llm.so libproot.so libproot-loader.so libtalloc.so; do unzip -l "$a" | grep -q "lib/arm64-v8a/$l" || { echo "$l missing in $a"; exit 1; }; done; done
           unzip -p out/SyntraOS-lite.apk AndroidManifest.xml | grep -qa SyntraAccessibility && { echo "lite must not declare accessibility"; exit 1; } || true
       - uses: actions/upload-artifact@v4
         with:

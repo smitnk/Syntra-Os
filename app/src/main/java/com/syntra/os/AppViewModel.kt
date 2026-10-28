@@ -43,6 +43,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var skills by mutableStateOf(store.load("skills", ListSerializer(Skill.serializer()), Skills.builtIn)); private set
     var tasks by mutableStateOf(store.load("tasks", ListSerializer(TaskRun.serializer()), emptyList())); private set
     var chat by mutableStateOf(listOf<Step>()); private set
+    var sessions by mutableStateOf(store.load("chats", ListSerializer(com.syntra.os.core.ChatSession.serializer()), emptyList())); private set
+    private var chatId = System.currentTimeMillis().toString()
+    val chatTitle get() = chat.firstOrNull { it.kind == StepKind.USER }?.text?.take(60) ?: "New chat"
+
+    /** Saves the open chat into the history list (newest first). */
+    private fun persistChat() {
+        if (chat.none { it.kind == StepKind.USER }) return
+        val s = com.syntra.os.core.ChatSession(chatId, chatTitle, chat.takeLast(200))
+        sessions = (listOf(s) + sessions.filterNot { it.id == chatId }).take(100)
+        store.save("chats", ListSerializer(com.syntra.os.core.ChatSession.serializer()), sessions)
+    }
+
+    fun newChat() { if (busy) return; persistChat(); chat = emptyList(); chatId = System.currentTimeMillis().toString() }
+    fun openChat(id: String) {
+        if (busy) return
+        persistChat()
+        sessions.firstOrNull { it.id == id }?.let { chat = it.steps; chatId = it.id }
+    }
+    fun deleteChat(id: String) {
+        sessions = sessions.filterNot { it.id == id }
+        store.save("chats", ListSerializer(com.syntra.os.core.ChatSession.serializer()), sessions)
+        if (id == chatId) { chat = emptyList(); chatId = System.currentTimeMillis().toString() }
+    }
     var pendingApproval by mutableStateOf<String?>(null); private set
     var busy by mutableStateOf(false); private set
     var status by mutableStateOf(""); private set
@@ -97,7 +120,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 chat = chat + Step(StepKind.ANSWER, settings.slot(settings.primaryRole).model, answer)
                 editTask(task.id) { it.copy(status = TaskStatus.DONE, steps = it.steps + Step(StepKind.ANSWER, "syntra", answer)) }
                 lastAnswer = answer
-                if (settings.autoMemory) launch { runCatching { extractMemories(e, text, answer) } }
+                if (settings.autoMemory) { val title = chatTitle; launch {
+                    runCatching { extractMemories(e, title, text, answer) }.onFailure { status = "Memory: ${it.message}" }
+                } }
             } catch (ex: CancellationException) {
                 editTask(task.id) { it.copy(status = TaskStatus.CANCELLED) }
                 chat = chat + Step(StepKind.ERROR, "system", "Cancelled.")
@@ -107,6 +132,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 lastAnswer = ex.message?.take(140)
             } finally {
                 busy = false; status = ""; streaming = ""; pendingApproval = null
+                persistChat()
                 store.save("tasks", ListSerializer(TaskRun.serializer()), tasks)
             }
         }
@@ -128,6 +154,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     val isLite get() = getApplication<Application>().packageName.endsWith(".lite")
+
+    // ---- Built-in Ubuntu (proot) ----
+    val linuxLines = androidx.compose.runtime.mutableStateListOf<String>()
+    var linuxStatus by mutableStateOf(""); private set
+    var linuxInstalled by mutableStateOf(com.syntra.os.device.Linux.installed(app)); private set
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val linux = com.syntra.os.device.LinuxSession(app) { line ->
+        mainHandler.post { linuxLines += line; if (linuxLines.size > 2000) linuxLines.removeRange(0, 500) }
+    }
+
+    fun installLinux() = viewModelScope.launch {
+        try { com.syntra.os.device.Linux.install(getApplication()) { linuxStatus = it }; linuxInstalled = true; linux.start() }
+        catch (e: Exception) { linuxStatus = "Install failed: ${e.message}" }
+    }
+
+    fun linuxSend(cmd: String) { linuxLines += "$ $cmd"; linux.start(); linux.send(cmd) }
+    fun linuxRestart() { linux.stop(); linuxLines.clear(); linux.start() }
+
+    override fun onCleared() { linux.stop(); super.onCleared() }
 
     fun cancel() { approval?.complete(false); engines.stopAll(); job?.cancel() }
 
@@ -167,7 +212,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun saveSkills(list: List<Skill>) { skills = list; store.save("skills", ListSerializer(Skill.serializer()), list) }
     fun toggleSkill(s: Skill) = saveSkills(skills.map { if (it == s) it.copy(enabled = !it.enabled) else it })
     fun removeSkill(s: Skill) = saveSkills(skills - s)
-    fun clearChat() { chat = emptyList() }
+    fun clearChat() = newChat()
 
     fun installSkill(url: String, onDone: (String) -> Unit) = viewModelScope.launch {
         try {

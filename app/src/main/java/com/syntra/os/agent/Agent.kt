@@ -117,6 +117,8 @@ class Agent(private val env: AgentEnv) {
     private fun systemPrompt(): String = buildString {
         appendLine("You are Syntra, the AI core of Syntra OS on the user's Android phone — a capable, calm assistant like JARVIS.")
         appendLine("You can operate the phone (phone_screen, phone_tap, open_app…), read notifications, schedule background tasks, run shell commands, browse the web, and use files.")
+        appendLine("Be an agent, not a chatbot: when a request needs information or an action, call tools yourself instead of telling the user to do it.")
+        appendLine("Examples: news/current facts → web_search then web_fetch; 'open X' → open_app; 'what's on screen' → phone_screen; code/files → shell.")
         appendLine("You lead a team of on-device LFM models. Ask teammates with ask_specialist, or several at once with consult_team.")
         appendLine("Answer in plain, natural sentences — never JSON or code unless the user asks for code. Keep answers short; they are spoken aloud.")
         appendLine("To act, call a tool. Save important facts about the user and their projects with memory_remember.")
@@ -163,7 +165,9 @@ class Agent(private val env: AgentEnv) {
         "phone_action" -> Phone.action(a.str("action").orEmpty())
         "open_app" -> withContext(Dispatchers.Main) { Phone.openApp(env.context, a.str("name").orEmpty()) }
         "list_apps" -> Phone.listApps(env.context)
-        "shell" -> Termux.run(env.context, a.str("command").orEmpty())
+        "shell" -> if (com.syntra.os.device.Linux.installed(env.context)) com.syntra.os.device.Linux.run(env.context, a.str("command").orEmpty())
+            else Termux.run(env.context, a.str("command").orEmpty())
+        "web_search" -> webSearch(a.str("query").orEmpty())
         "file_list" -> safeFile(a.str("path") ?: ".").listFiles().orEmpty()
             .joinToString("\n") { (if (it.isDirectory) "dir  " else "file ") + it.name + " " + it.length() }.ifBlank { "(empty)" }
         "file_read" -> safeFile(a.str("path").orEmpty()).readText().take(6000)
@@ -189,6 +193,19 @@ class Agent(private val env: AgentEnv) {
         val f = File(workspace, path).canonicalFile
         require(f.path.startsWith(workspace.canonicalPath)) { "path outside workspace" }
         return f
+    }
+
+    private suspend fun webSearch(q: String): String = withContext(Dispatchers.IO) {
+        require(q.isNotBlank()) { "query required" }
+        val doc = Jsoup.connect("https://html.duckduckgo.com/html/").data("q", q).userAgent("Mozilla/5.0 (Linux; Android) SyntraOS")
+            .timeout(20_000).post()
+        doc.select(".result").take(8).mapIndexed { i, r ->
+            val a = r.selectFirst("a.result__a")
+            var href = a?.attr("href").orEmpty()
+            // DuckDuckGo wraps links as //duckduckgo.com/l/?uddg=<encoded url>
+            Regex("uddg=([^&]+)").find(href)?.let { href = java.net.URLDecoder.decode(it.groupValues[1], "UTF-8") }
+            "${i + 1}. ${a?.text().orEmpty()}\n   $href\n   ${r.selectFirst(".result__snippet")?.text().orEmpty().take(220)}"
+        }.joinToString("\n").ifBlank { "No results." }
     }
 
     private suspend fun webFetch(url: String): String = withContext(Dispatchers.IO) {
@@ -230,30 +247,43 @@ class Agent(private val env: AgentEnv) {
 }
 
 /** After each exchange the lead model decides what is worth remembering — the user never has to. */
-suspend fun extractMemories(env: AgentEnv, userText: String, answer: String) {
-    val prompt = """From this exchange, extract durable facts worth remembering about the user, people, projects, places, stories or preferences.
-Reply with ONLY JSON: {"entities":[{"label":"","type":"person|project|story|task|concept|place|tool","notes":""}],"relations":[{"from":"","to":"","relation":""}]}
-Return {"entities":[],"relations":[]} if nothing is durable.
+/**
+ * After each exchange: the chat itself becomes a "conversation" node linked to the user, and the lead model
+ * extracts people/projects/topics/facts that get linked to that conversation. The user never adds anything by hand.
+ */
+suspend fun extractMemories(env: AgentEnv, chatTitle: String, userText: String, answer: String) {
+    var g = env.graph()
+    val (g0, me) = g.upsert("Me", "person", "")
+    val (g1, conv) = g0.upsert("Chat: ${chatTitle.take(48)}", "conversation", "You: ${userText.take(160)}\nSyntra: ${answer.take(200)}")
+    g = g1.link(me.id, conv.id, "talked_about")
+    env.setGraph(g) // saved even if extraction below fails
+
+    val prompt = """List the people, projects, places, topics, apps and facts in this exchange as a knowledge graph.
+Always include at least the main topic. Reply with ONLY JSON:
+{"entities":[{"label":"","type":"person|project|story|task|topic|place|app|preference","notes":""}],"relations":[{"from":"","to":"","relation":""}]}
+Use "Me" for the user.
 
 User: $userText
-Assistant: $answer"""
+Assistant: ${answer.take(800)}"""
     val reply = callModel(env, env.settings.primaryRole, listOf(message("user", prompt)), null, null, null).content
     val start = reply.indexOf('{'); val end = reply.lastIndexOf('}')
     if (start < 0 || end <= start) return
-    val o = runCatching { json.parseToJsonElement(reply.substring(start, end + 1)).jsonObject }.getOrNull() ?: return
-    var g = env.graph()
+    val o = runCatching { json.parseToJsonElement(com.syntra.os.local.LfmPrompt.lenient(reply.substring(start, end + 1))).jsonObject }.getOrNull() ?: return
+    g = env.graph()
     (o["entities"] as? JsonArray).orEmpty().forEach { e ->
         val m = e as? JsonObject ?: return@forEach
         val label = m.str("label")?.trim().orEmpty()
-        if (label.isNotBlank()) g = g.upsert(label, m.str("type") ?: "concept", m.str("notes").orEmpty()).first
+        if (label.isBlank() || label.length > 60) return@forEach
+        val (g2, n) = g.upsert(label, m.str("type") ?: "topic", m.str("notes").orEmpty())
+        g = if (n.id == conv.id || n.id == me.id) g2 else g2.link(conv.id, n.id, "mentions")
     }
     (o["relations"] as? JsonArray).orEmpty().forEach { r ->
         val m = r as? JsonObject ?: return@forEach
         val from = m.str("from")?.trim().orEmpty(); val to = m.str("to")?.trim().orEmpty()
         if (from.isBlank() || to.isBlank()) return@forEach
-        val (g1, a) = g.upsert(from, "concept", "")
-        val (g2, b) = g1.upsert(to, "concept", "")
-        g = g2.link(a.id, b.id, m.str("relation")?.ifBlank { null } ?: "related_to")
+        val (g3, x) = g.upsert(from, "topic", "")
+        val (g4, y) = g3.upsert(to, "topic", "")
+        g = g4.link(x.id, y.id, m.str("relation")?.ifBlank { null } ?: "related_to")
     }
     env.setGraph(g)
 }

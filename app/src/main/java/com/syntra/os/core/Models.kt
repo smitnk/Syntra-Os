@@ -80,3 +80,6 @@ data class TaskRun(
     val steps: List<Step> = emptyList(),
     val startedAt: Long = System.currentTimeMillis(),
 )
+
+@Serializable
+data class ChatSession(val id: String, val title: String, val steps: List<Step>, val updated: Long = System.currentTimeMillis())
