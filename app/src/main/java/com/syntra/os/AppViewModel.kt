@@ -2,12 +2,17 @@ package com.syntra.os
 
 import android.app.Application
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.syntra.os.agent.Agent
+import com.syntra.os.agent.AgentEnv
 import com.syntra.os.agent.Skills
+import com.syntra.os.agent.extractMemories
+import com.syntra.os.core.DEFAULT_PROVIDERS
+import com.syntra.os.core.ModelRole
 import com.syntra.os.core.Settings
 import com.syntra.os.core.Skill
 import com.syntra.os.core.Step
@@ -16,17 +21,24 @@ import com.syntra.os.core.Store
 import com.syntra.os.core.TaskRun
 import com.syntra.os.core.TaskStatus
 import com.syntra.os.core.message
+import com.syntra.os.local.LocalEngines
+import com.syntra.os.local.ModelManager
 import com.syntra.os.memory.Graph
+import com.syntra.os.voice.VoiceState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val store = Store(app.filesDir)
+    val models = ModelManager(app.filesDir)
+    val engines = LocalEngines(models)
 
-    var settings by mutableStateOf(store.load("settings", Settings.serializer(), Settings())); private set
+    var settings by mutableStateOf(migrate(store.load("settings", Settings.serializer(), Settings()))); private set
     var graph by mutableStateOf(store.load("graph", Graph.serializer(), Graph())); private set
     var skills by mutableStateOf(store.load("skills", ListSerializer(Skill.serializer()), Skills.builtIn)); private set
     var tasks by mutableStateOf(store.load("tasks", ListSerializer(TaskRun.serializer()), emptyList())); private set
@@ -34,49 +46,74 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var pendingApproval by mutableStateOf<String?>(null); private set
     var busy by mutableStateOf(false); private set
     var status by mutableStateOf(""); private set
-    /** Set after an answer arrives so the UI can speak it. */
+    var streaming by mutableStateOf(""); private set
+    var activeRoles by mutableStateOf(emptySet<ModelRole>()); private set
+    var attachment by mutableStateOf<String?>(null)
+    var voiceState by mutableStateOf(VoiceState.OFF)
+    var heard by mutableStateOf("")
+    /** Set after an answer arrives so the activity can speak it. */
     var lastAnswer by mutableStateOf<String?>(null)
+    val downloads = mutableStateMapOf<ModelRole, String>()
+    var installedTick by mutableStateOf(0); private set
 
     private var job: Job? = null
     private var approval: CompletableDeferred<Boolean>? = null
+
+    init {
+        // Light up the model-team row while engines generate.
+        viewModelScope.launch { while (isActive) { activeRoles = engines.active; delay(150) } }
+    }
+
+    /** Older installs lack the on-device / OpenClaw / Hermes providers. */
+    private fun migrate(s: Settings): Settings {
+        val missing = DEFAULT_PROVIDERS.filter { d -> s.providers.none { it.id == d.id } }
+        return if (missing.isEmpty()) s else s.copy(providers = missing + s.providers)
+    }
+
+    private fun env(log: (Step) -> Unit = {}) = AgentEnv(getApplication(), settings, skills, engines, { graph }, ::updateGraph,
+        log = log, approve = ::askApproval, onStream = { streaming = it })
 
     fun send(text: String) {
         if (text.isBlank() || busy) return
         val history = chat.mapNotNull {
             when (it.kind) { StepKind.USER -> message("user", it.text); StepKind.ANSWER -> message("assistant", it.text); else -> null }
         }
-        chat = chat + Step(StepKind.USER, "you", text)
+        val image = attachment
+        attachment = null
+        chat = chat + Step(StepKind.USER, if (image != null) "you · image" else "you", text)
         val task = TaskRun(id = System.currentTimeMillis().toString(), goal = text)
         tasks = (listOf(task) + tasks).take(30)
         busy = true
+        streaming = ""
         job = viewModelScope.launch {
-            val agent = Agent(settings, skills, { graph }, ::updateGraph,
-                log = { step -> status = step.text.take(80); editTask(task.id) { it.copy(steps = it.steps + step) } },
-                approve = ::askApproval)
+            val e = env { step -> status = "${step.who}: ${step.text}".take(90); editTask(task.id) { it.copy(steps = it.steps + step) } }
             try {
-                val answer = agent.run(text, history)
+                val answer = Agent(e).run(text, history, image)
                 chat = chat + Step(StepKind.ANSWER, settings.slot(settings.primaryRole).model, answer)
                 editTask(task.id) { it.copy(status = TaskStatus.DONE, steps = it.steps + Step(StepKind.ANSWER, "syntra", answer)) }
                 lastAnswer = answer
-            } catch (e: CancellationException) {
+                if (settings.autoMemory) launch { runCatching { extractMemories(e, text, answer) } }
+            } catch (ex: CancellationException) {
                 editTask(task.id) { it.copy(status = TaskStatus.CANCELLED) }
                 chat = chat + Step(StepKind.ERROR, "system", "Cancelled.")
-            } catch (e: Exception) {
-                editTask(task.id) { it.copy(status = TaskStatus.FAILED, steps = it.steps + Step(StepKind.ERROR, "system", e.message.orEmpty())) }
-                chat = chat + Step(StepKind.ERROR, "system", e.message ?: e.toString())
+            } catch (ex: Exception) {
+                editTask(task.id) { it.copy(status = TaskStatus.FAILED, steps = it.steps + Step(StepKind.ERROR, "system", ex.message.orEmpty())) }
+                chat = chat + Step(StepKind.ERROR, "system", ex.message ?: ex.toString())
+                lastAnswer = ex.message?.take(140)
             } finally {
-                busy = false; status = ""; pendingApproval = null
+                busy = false; status = ""; streaming = ""; pendingApproval = null
                 store.save("tasks", ListSerializer(TaskRun.serializer()), tasks)
             }
         }
     }
 
-    fun cancel() { approval?.complete(false); job?.cancel() }
+    fun cancel() { approval?.complete(false); engines.stopAll(); job?.cancel() }
 
     private suspend fun askApproval(action: String): Boolean {
         val d = CompletableDeferred<Boolean>()
         approval = d
         pendingApproval = action
+        lastAnswer = "I need your approval."
         val ok = d.await()
         pendingApproval = null
         return ok
@@ -84,9 +121,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun answerApproval(ok: Boolean) { approval?.complete(ok) }
 
-    private fun editTask(id: String, f: (TaskRun) -> TaskRun) {
-        tasks = tasks.map { if (it.id == id) f(it) else it }
+    private fun editTask(id: String, f: (TaskRun) -> TaskRun) { tasks = tasks.map { if (it.id == id) f(it) else it } }
+
+    fun downloadModel(role: ModelRole) {
+        if (role in downloads) return
+        downloads[role] = "Starting…"
+        viewModelScope.launch {
+            try {
+                models.download(role) { downloads[role] = it }
+                downloads.remove(role)
+            } catch (e: Exception) {
+                downloads[role] = "Failed: ${e.message}"
+                delay(6000); downloads.remove(role)
+            }
+            installedTick++
+        }
     }
+
+    fun deleteModel(role: ModelRole) { models.delete(role); installedTick++ }
 
     fun updateGraph(g: Graph) { graph = g; store.save("graph", Graph.serializer(), g) }
     fun updateSettings(s: Settings) { settings = s; store.save("settings", Settings.serializer(), s) }

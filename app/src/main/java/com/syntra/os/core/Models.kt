@@ -11,13 +11,26 @@ enum class ModelRole(val label: String, val defaultModel: String) {
     DECISION("Omni · Decision", "d1-Omni-2B"),
 }
 
-/** Any OpenAI-compatible endpoint: Hermes Agent, OpenRouter, Liquid, llama.cpp / Ollama in Termux, etc. */
+const val ON_DEVICE = "on-device"
+
+/** On-device llama.cpp, or any OpenAI-compatible endpoint: OpenClaw gateway, Hermes Agent, OpenRouter, Liquid, Ollama in Termux. */
 @Serializable
 data class Provider(
     val id: String,
     val name: String,
     val baseUrl: String,
     val apiKey: String = "",
+    /** Model/agent id used when this provider is a delegate agent (e.g. "openclaw"). */
+    val agentModel: String = "",
+) {
+    val local get() = baseUrl == ON_DEVICE
+}
+
+val DEFAULT_PROVIDERS = listOf(
+    Provider(ON_DEVICE, "On-device (llama.cpp)", ON_DEVICE),
+    Provider("openclaw", "OpenClaw Gateway", "http://127.0.0.1:18789/v1", agentModel = "openclaw"),
+    Provider("hermes", "Hermes Agent", "http://127.0.0.1:8642/v1", agentModel = "hermes-agent"),
+    Provider("openrouter", "OpenRouter", "https://openrouter.ai/api/v1"),
 )
 
 @Serializable
@@ -28,15 +41,16 @@ data class McpServer(val name: String, val url: String, val token: String = "")
 
 @Serializable
 data class Settings(
-    val providers: List<Provider> = listOf(
-        Provider("local", "Local (Termux llama-server / Hermes)", "http://127.0.0.1:8080/v1"),
-        Provider("openrouter", "OpenRouter", "https://openrouter.ai/api/v1"),
-    ),
-    val slots: List<ModelSlot> = ModelRole.entries.map { ModelSlot(it, "local") },
+    val providers: List<Provider> = DEFAULT_PROVIDERS,
+    val slots: List<ModelSlot> = ModelRole.entries.map { ModelSlot(it, ON_DEVICE) },
     val primaryRole: ModelRole = ModelRole.TEXT,
     val mcpServers: List<McpServer> = emptyList(),
     val githubToken: String = "",
     val speakReplies: Boolean = true,
+    val alwaysListening: Boolean = true,
+    val wakeWords: String = "syntra, jarvis",
+    val askPhoneActions: Boolean = true,
+    val autoMemory: Boolean = true,
 ) {
     fun slot(role: ModelRole) = slots.firstOrNull { it.role == role } ?: ModelSlot(role)
     fun provider(id: String) = providers.firstOrNull { it.id == id }

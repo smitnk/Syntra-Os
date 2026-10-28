@@ -1,5 +1,5 @@
 <resources>
     <style name="Theme.Syntra" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#05080F</item>
+        <item name="android:windowBackground">#141110</item>
     </style>
 </resources>

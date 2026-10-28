@@ -1,25 +1,22 @@
 # Syntra OS
 
-A JARVIS-style agentic environment for Android (Kotlin + Jetpack Compose).
+A JARVIS-style agentic environment for Android: on-device LFM3 models, an always-listening voice assistant, phone control, self-written graph memory, and delegation to OpenClaw / Hermes agents.
 
-## What works in v0.1
-- **Model team (LFM3 family):** five role slots — Text (LFM3-1.7B), Vision (LFM3-VL-2B), Audio (LFM3-Audio-2B), Omni-Generative (LFM3-Omni-2B), Decision (d1-Omni-2B). You pick the lead model by hand; it calls the others through the `ask_specialist` tool, and every model sees the same graph memory and task transcript. No automatic router.
-- **Providers:** any OpenAI-compatible endpoint with a key — Hermes Agent's API server, OpenRouter, Liquid's API, or `llama-server` / Ollama running in Termux (`http://127.0.0.1:8080/v1`).
-- **Agent loop:** multi-step tool calling, live task log, cancel, and a human-approval gate for writes (GitHub non-GET, MCP tool calls).
-- **Graph memory (Graphify-style):** persistent entities and relations, community detection, force-directed interactive graph — pan, pinch-zoom, tap to inspect, search, filter by community, edit/delete nodes, add/remove links. Agents read and write it via `memory_search`, `memory_remember`, `memory_link`.
-- **Tools:** web fetch + text/link extraction (Jsoup), GitHub REST, MCP client (Streamable HTTP: `tools/list`, `tools/call`).
-- **Skills:** built-in specialist roles + install Agency-Agents-style markdown roles from GitHub. Installed skills are off until you review and enable them.
-- **Voice:** speech input (system recognizer) and spoken replies (TTS).
+## What's in v0.2
+- **On-device LFM3 team (llama.cpp, no server):** Text (LFM3-1.7B), Vision (LFM3-VL-2B), Audio, Omni (LFM3-Omni-2B), Decision (d1-Omni-2B). Download each from Setup; they then run fully offline. Each model has its own engine, so models answer **in parallel** — the lead model can `consult_team` several teammates at once, and all share the graph memory and a task blackboard.
+- **Always-on voice:** says "Syntra" or "Jarvis" — no tap, no popup. Replies are spoken with the best offline voice; after a reply it listens for a follow-up.
+- **Phone control:** accessibility service reads the screen and taps, types, swipes, presses Back/Home, opens apps (the approach used by open-source Android agents like DroidRun and Mobile-Agent). Asks before acting unless you turn that off.
+- **Termux shell** via Termux's `RUN_COMMAND` API (always asks first).
+- **OpenClaw & Hermes:** both work as delegate agents (`delegate` tool) or as providers, through their OpenAI-compatible gateways (OpenClaw: enable `gateway.http.endpoints.chatCompletions`).
+- **Self-written graph memory:** after every reply the lead model extracts people, projects, stories and relations into the Graphify-style graph. You can explore, search, edit and delete — but you never have to add things.
+- **Images:** attach a photo; the Vision teammate sees it.
+- Web fetch, GitHub REST, MCP (Streamable HTTP), workspace files, installable Agency-Agents skills, task log with cancel and approvals.
 
-## Needs your setup
-- An LLM endpoint: either a cloud key, or a local server in Termux.
-- GitHub token (Setup → GitHub) for private repos / writes.
-- MCP server URLs.
-
-## Not done yet (next phases)
-- On-device LFM inference via Liquid's LEAP Android SDK (currently LFM runs through an OpenAI-compatible server).
-- Hermes Agent embedded natively (it is Python; today it connects as a provider).
-- Scrapling (Python) as a sidecar service; Accessibility-service app control; Termux `RUN_COMMAND` shell bridge; scheduled jobs; image/audio input to vision/audio slots; encrypted key storage.
+## Status / limits
+- LFM3 text and vision run on llama.cpp master (pinned commit). **LFM3-Omni audio in/out needs an unmerged llama.cpp PR**, so voice uses Android speech recognition + TTS for now. The Audio and d1 repos download only once Liquid publishes their GGUFs.
+- Voice listens while the app is open (no background service yet).
+- Native code targets arm64 with dotprod/i8mm (2021+ phones).
+- Not yet: scheduled jobs, notifications reading, encrypted key storage.
 
 ## Build
-CI builds a debug APK on every push (Actions → Android CI → artifact `syntra-os-debug-apk`). Locally: `./gradlew assembleDebug`.
+CI builds a debug APK on every push (Actions → Android CI → `syntra-os-debug-apk`). Locally: `./gradlew assembleDebug` (needs NDK + CMake 3.22.1).

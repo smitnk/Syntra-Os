@@ -58,3 +58,35 @@ class SkillsTest {
             com.syntra.os.agent.Skills.rawUrl("https://github.com/a/b/blob/main/c.md"))
     }
 }
+
+class LocalTest {
+    @Test fun parsesLocalToolCalls() {
+        val r = com.syntra.os.local.LfmPrompt.parse(
+            "Let me check.\n<tool>{\"name\": \"phone_screen\", \"arguments\": {}}</tool>\n<tool>{\"name\":\"ask_specialist\",\"arguments\":{\"role\":\"VISION\",\"question\":\"q\"}}</tool>")
+        assertEquals(listOf("phone_screen", "ask_specialist"), r.toolCalls.map { it.name })
+        assertEquals("Let me check.", r.content)
+    }
+
+    @Test fun plainAnswerHasNoCalls() {
+        assertEquals(0, com.syntra.os.local.LfmPrompt.parse("Hello Sumit").toolCalls.size)
+    }
+
+    @Test fun rendersChatMl() {
+        val p = com.syntra.os.local.LfmPrompt.render(listOf(com.syntra.os.core.message("user", "hi")), null, "<__media__>")
+        assertEquals("<|im_start|>user\n<__media__>\nhi<|im_end|>\n<|im_start|>assistant\n", p)
+    }
+
+    @Test fun picksPhoneQuantAndProjector() {
+        val (m, p) = com.syntra.os.local.pickFiles(listOf("README.md", "LFM3-VL-2B-F16.gguf", "LFM3-VL-2B-Q4_0.gguf",
+            "LFM3-VL-2B-Q8_0.gguf", "mmproj-LFM3-VL-2B-F16.gguf", "mmproj-LFM3-VL-2B-Q8_0.gguf"))!!
+        assertEquals("LFM3-VL-2B-Q4_0.gguf", m)
+        assertEquals("mmproj-LFM3-VL-2B-Q8_0.gguf", p)
+    }
+
+    @Test fun wakeWord() {
+        val w = listOf("syntra", "jarvis")
+        assertEquals("open youtube", com.syntra.os.voice.afterWakeWord("Hey Syntra, open youtube", w))
+        assertEquals("", com.syntra.os.voice.afterWakeWord("Jarvis", w))
+        assertEquals(null, com.syntra.os.voice.afterWakeWord("what time is it", w))
+    }
+}

@@ -22,14 +22,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -120,7 +117,6 @@ fun MemoryScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
     var pan by remember { mutableStateOf(Offset.Zero) }
     var selected by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
-    var adding by remember { mutableStateOf(false) }
     var focusCommunity by remember { mutableStateOf<Int?>(null) }
 
     val comm = remember(g) { g.communities() }
@@ -211,22 +207,14 @@ fun MemoryScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             }
         }
 
-        if (g.nodes.isEmpty()) Text("Memory is empty. Chat with Syntra or tap + to add a node.", color = Dim,
+        if (g.nodes.isEmpty()) Text("Syntra builds this graph itself as you talk — people, projects and stories appear here.", color = Dim,
             modifier = Modifier.align(Alignment.Center).padding(32.dp))
 
         val node = selected?.let { g.find(it) }
         if (node != null) NodePanel(vm, node, onSelect = { selected = it }, onClose = { selected = null }, Modifier.align(Alignment.BottomCenter))
-        else FloatingActionButton({ adding = true }, Modifier.align(Alignment.BottomEnd).padding(16.dp)) { Icon(Icons.Outlined.Add, "Add node") }
+
     }
 
-    if (adding) {
-        var label by remember { mutableStateOf("") }
-        var type by remember { mutableStateOf("concept") }
-        AlertDialog(onDismissRequest = { adding = false }, title = { Text("New memory node") },
-            text = { Column { OutlinedTextField(label, { label = it }, label = { Text("Label") }); OutlinedTextField(type, { type = it }, label = { Text("Type") }) } },
-            confirmButton = { TextButton({ if (label.isNotBlank()) { val (ng, n) = g.upsert(label, type, ""); vm.updateGraph(ng); selected = n.id }; adding = false }) { Text("Add") } },
-            dismissButton = { TextButton({ adding = false }) { Text("Cancel") } })
-    }
 }
 
 @Composable

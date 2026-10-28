@@ -2,6 +2,8 @@ package com.syntra.os.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -137,7 +139,65 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     var mcpMsg by remember { mutableStateOf("") }
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Header("SETUP", "Pick models by hand. Every provider uses the OpenAI-compatible API.") }
+        item { Header("SETUP", "Models run on this phone by default. Cloud and agent providers are optional.") }
+
+        item {
+            val tick = vm.installedTick // re-read files after downloads
+            Section("On-device models (LFM3 · llama.cpp)") {
+                Text("Downloaded from Hugging Face once, then fully offline. ~1–2 GB each; Wi-Fi recommended.", color = Dim, fontSize = 12.sp)
+                ModelRole.entries.forEach { r ->
+                    val files = remember(tick, r) { vm.models.installed(r) }
+                    val dl = vm.downloads[r]
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(r.defaultModel, fontWeight = FontWeight.SemiBold)
+                            Text(when {
+                                dl != null -> dl
+                                files != null -> "${r.label} · ${files.model.length() / 1_000_000} MB" + (if (files.mmproj != null) " + projector" else "") +
+                                    (if (vm.engines.isLoaded(r)) " · loaded" else "")
+                                else -> "${r.label} · not downloaded"
+                            }, color = if (dl?.startsWith("Failed") == true) Danger else Dim, fontSize = 12.sp)
+                        }
+                        when {
+                            dl != null -> {}
+                            files != null -> TextButton({ vm.deleteModel(r) }) { Text("Delete", color = Dim) }
+                            else -> OutlinedButton({ vm.downloadModel(r) }) { Text("Download") }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            Section("Phone control") {
+                Text("Lets Syntra read the screen, tap, type, swipe and open apps.", color = Dim, fontSize = 12.sp)
+                OutlinedButton({ ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
+                    Text(if (com.syntra.os.device.SyntraAccessibility.instance != null) "Accessibility: on ✓" else "Enable accessibility service")
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Ask before tapping / typing", Modifier.weight(1f))
+                    Switch(s.askPhoneActions, { vm.updateSettings(s.copy(askPhoneActions = it)) })
+                }
+                Text("Termux shell: install Termux, set allow-external-apps = true in ~/.termux/termux.properties, then grant the permission below.",
+                    color = Dim, fontSize = 12.sp)
+                val termuxPerm = androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) {}
+                OutlinedButton({ termuxPerm.launch("com.termux.permission.RUN_COMMAND") }) { Text("Grant Termux permission") }
+            }
+        }
+
+        item {
+            Section("Memory") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Automatic memory")
+                        Text("After each reply, the lead model saves what matters to the graph.", color = Dim, fontSize = 12.sp)
+                    }
+                    Switch(s.autoMemory, { vm.updateSettings(s.copy(autoMemory = it)) })
+                }
+            }
+        }
 
         item {
             Section("Model team (LFM3 family)") {
@@ -152,7 +212,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     Text(slot.role.label, color = Violet, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
                     OutlinedTextField(slot.model, { m -> vm.updateSettings(s.copy(slots = s.slots.map { if (it.role == slot.role) it.copy(model = m) else it })) },
                         Modifier.fillMaxWidth(), label = { Text("Model id") }, singleLine = true)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         s.providers.forEach { p ->
                             FilterChip(slot.providerId == p.id, {
                                 vm.updateSettings(s.copy(slots = s.slots.map { if (it.role == slot.role) it.copy(providerId = p.id) else it }))
@@ -171,6 +231,8 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     OutlinedTextField(p.baseUrl, { set(p.copy(baseUrl = it.trim())) }, Modifier.fillMaxWidth(), label = { Text("Base URL (…/v1)") }, singleLine = true)
                     OutlinedTextField(p.apiKey, { set(p.copy(apiKey = it.trim())) }, Modifier.fillMaxWidth(), label = { Text("API key / token") },
                         singleLine = true, visualTransformation = PasswordVisualTransformation())
+                    if (!p.local) OutlinedTextField(p.agentModel, { set(p.copy(agentModel = it.trim())) }, Modifier.fillMaxWidth(),
+                        label = { Text("Delegate agent id (e.g. openclaw) — blank if not an agent") }, singleLine = true)
                     TextButton({ vm.updateSettings(s.copy(providers = s.providers - p)) }) { Text("Remove ${p.name}", color = Danger) }
                 }
                 TextButton({ vm.updateSettings(s.copy(providers = s.providers + Provider("p${System.currentTimeMillis()}", "New provider", "https://"))) }) {
@@ -212,6 +274,12 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
 
         item {
             Section("Voice") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Always listening for wake word", Modifier.weight(1f))
+                    Switch(s.alwaysListening, { vm.updateSettings(s.copy(alwaysListening = it)) })
+                }
+                OutlinedTextField(s.wakeWords, { vm.updateSettings(s.copy(wakeWords = it)) }, Modifier.fillMaxWidth(),
+                    label = { Text("Wake words (comma-separated)") }, singleLine = true)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Speak replies aloud", Modifier.weight(1f))
                     Switch(s.speakReplies, { vm.updateSettings(s.copy(speakReplies = it)) })
