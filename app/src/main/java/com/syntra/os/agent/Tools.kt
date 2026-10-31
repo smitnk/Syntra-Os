@@ -38,7 +38,7 @@ val PHONE_TOOLS = setOf("phone_tap", "phone_type", "phone_swipe", "phone_action"
 val ALWAYS_ASK = setOf("mcp_call", "delegate")
 
 /** Commands inside the app's own Ubuntu sandbox; the user can let these run without asking. */
-val LINUX_TOOLS = setOf("shell", "code_agent", "hermes_agent", "claude_code")
+val LINUX_TOOLS = setOf("shell", "code_agent", "hermes_agent", "claude_code", "media_edit")
 
 fun isSensitive(name: String, args: JsonObject, askPhone: Boolean, askLinux: Boolean = true): Boolean =
     name in ALWAYS_ASK || (askLinux && (name in LINUX_TOOLS || name in com.syntra.os.ext.ExtRuntime.tools)) ||
@@ -46,6 +46,11 @@ fun isSensitive(name: String, args: JsonObject, askPhone: Boolean, askLinux: Boo
         ((name == "github" || name == "http_request") && (args.str("method") ?: "GET").uppercase() != "GET")
 
 val TOOLS: JsonArray = buildJsonArray {
+    add(tool("make_document", "Create a real PDF or Word (.docx) file from Markdown (headings, bullets, **bold**). Saved in the workspace docs folder.",
+        listOf("title", "markdown", "format"), mapOf("title" to "File title", "markdown" to "Full document in Markdown", "format" to "pdf or docx")))
+    add(tool("media_edit", "Edit video/audio with ffmpeg in Linux: trim, convert, resize, extract audio, join. Files are workspace paths.",
+        listOf("inputs", "output", "args"), mapOf("inputs" to "Comma-separated input paths, e.g. clips/a.mp4", "output" to "Output path, e.g. out/short.mp4",
+            "args" to "ffmpeg options between inputs and output, e.g. -ss 5 -t 10 -vf scale=720:-2 -c:a aac")))
     add(tool("review_page", "Show a Markdown draft to the user for approval, then save it as a page in Spaces. Call once and wait for the result.",
         listOf("title", "content"), mapOf("title" to "Page title", "content" to "Full Markdown draft")))
     add(tool("knowledge_search", "Search the user's documents (knowledge base). Returns numbered passages with source and page; cite them as [n].",

@@ -306,6 +306,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         inst = inst.copy(toolsReady = out.startsWith("exit 0"), log = out.takeLast(1500))
                     }
                 }
+                if (p.manifest.mcp.isNotEmpty()) updateSettings(settings.copy(mcpServers =
+                    settings.mcpServers.filterNot { s -> p.manifest.mcp.any { it.name == s.name } } + p.manifest.mcp))
                 saveExtensions(extensions.filterNot { it.manifest.id == id } + inst)
                 extStatus = "Installed ${p.manifest.name}: ${p.manifest.skills.size} skills, ${p.manifest.agents.size} agents, ${p.manifest.tools.size} tools" +
                     if (p.commands.isNotEmpty() && !inst.toolsReady) " — dependencies not ready" else ""
@@ -333,6 +335,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleExtension(id: String) = saveExtensions(extensions.map { if (it.manifest.id == id) it.copy(enabled = !it.enabled) else it })
 
     fun removeExtension(id: String) {
+        extensions.firstOrNull { it.manifest.id == id }?.manifest?.mcp?.takeIf { it.isNotEmpty() }?.let { gone ->
+            updateSettings(settings.copy(mcpServers = settings.mcpServers.filterNot { s -> gone.any { it.name == s.name } })) }
         extManager.remove(id)
         saveSkills(skills.filterNot { it.source == "ext:$id" })
         saveExtensions(extensions.filterNot { it.manifest.id == id })

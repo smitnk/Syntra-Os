@@ -89,6 +89,18 @@ object Verifier {
                 val code = Regex("^HTTP (\\d+)").find(result)?.groupValues?.get(1)?.toIntOrNull()
                 if (code != null && code in 200..299) Verification(true) else Verification(false, "HTTP $code")
             }
+            "make_document" -> {
+                val f = File(workspace, result.removePrefix("Wrote ").substringBefore(" (").trim())
+                val head = runCatching { f.inputStream().use { s -> ByteArray(4).also { s.read(it) } } }.getOrNull()
+                val ok = head != null && (f.extension == "pdf" && String(head) == "%PDF" || f.extension == "docx" && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte())
+                if (ok) Verification(true, f.name, f) else Verification(false, "document missing or not a valid ${f.extension}")
+            }
+            "media_edit" -> {
+                val code = Regex("^exit (-?\\d+)").find(result)?.groupValues?.get(1)?.toIntOrNull()
+                val f = File(workspace, args.str("output").orEmpty().trim().trimStart('/'))
+                if (code == 0 && f.isFile && f.length() > 0) Verification(true, "${f.name}: ${f.length() / 1024} KB", f)
+                else Verification(false, if (code != 0) "ffmpeg exit $code" else "output file missing")
+            }
             "review_page" -> if (!result.startsWith("Saved ")) Verification(true, "declined") else {
                 val f = File(workspace, result.removePrefix("Saved ").substringBefore(" (").trim())
                 if (f.isFile && f.length() > 0) Verification(true, f.name, f) else Verification(false, "page missing after save")

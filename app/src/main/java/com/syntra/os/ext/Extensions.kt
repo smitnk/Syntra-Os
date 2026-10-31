@@ -41,6 +41,8 @@ import java.io.File
     val description: String = "",
     val skills: List<ExtSkill> = emptyList(), val agents: List<ExtAgent> = emptyList(), val tools: List<ExtTool> = emptyList(),
     val dependencies: ExtDeps = ExtDeps(), val permissions: List<String> = emptyList(),
+    /** Remote MCP servers this extension connects (their tools are approval-gated like any MCP tool). */
+    val mcp: List<com.syntra.os.core.McpServer> = emptyList(),
 )
 
 /** What will happen if the user approves — shown in full before anything is installed. */
@@ -228,7 +230,9 @@ class ExtensionManager(private val root: File, private val token: () -> String) 
             Registry.manifestFor(repo) != null -> Triple(Registry.manifestFor(repo)!!, emptyList<String>(), true).also { warnings += "Manifest supplied by Syntra's registry." }
             else -> Importer.generate(repo, tree) { p -> raw(repo, sha, p) }.let { (m, f) -> Triple(m, f, true) }
         }
-        if (manifest.skills.isEmpty() && manifest.agents.isEmpty() && manifest.tools.isEmpty() && manifest.dependencies.pip.isEmpty())
+        manifest.mcp.forEach { require(it.url.startsWith("https://") && it.token.isBlank()) { "MCP server ${it.name} must use https and ship no token" } }
+        if (manifest.mcp.isNotEmpty()) warnings += "Connects MCP servers: " + manifest.mcp.joinToString { "${it.name} (${it.url})" }
+        if (manifest.skills.isEmpty() && manifest.agents.isEmpty() && manifest.tools.isEmpty() && manifest.dependencies.pip.isEmpty() && manifest.mcp.isEmpty())
             warnings += "Nothing Syntra can use was found (no SKILL.md, agent personas, tools or Python package)."
         var bytes = 0L
         val kept = files.filter { p -> val s = sizes[p] ?: 0; if (bytes + s > 6_000_000L) false else { bytes += s; true } }

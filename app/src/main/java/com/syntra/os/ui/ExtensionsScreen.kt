@@ -201,7 +201,7 @@ private fun PlanSheet(p: InstallPlan, onApprove: () -> Unit, onCancel: () -> Uni
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 8.dp)) {
-                Button(onApprove, enabled = m.skills.size + m.agents.size + m.tools.size + m.dependencies.pip.size > 0) { Text("Approve & install") }
+                Button(onApprove, enabled = m.skills.size + m.agents.size + m.tools.size + m.dependencies.pip.size + m.mcp.size > 0) { Text("Approve & install") }
                 OutlinedButton(onCancel) { Text("Cancel") }
             }
         }

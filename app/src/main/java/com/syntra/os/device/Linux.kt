@@ -191,7 +191,8 @@ object Linux {
             "-b", "/dev/urandom:/dev/random", "-b", "/proc/self/fd:/dev/fd", "-b", "${shm.path}:/dev/shm")
         args += fakeProc(ctx)
         // The agentic-OS folder (context, memory, outputs) is shared between the app and Ubuntu.
-        args += listOf("-b", File(ctx.filesDir, "agentic-os").apply { mkdirs() }.path + ":/root/agentic-os", "-w", "/root",
+        args += listOf("-b", File(ctx.filesDir, "agentic-os").apply { mkdirs() }.path + ":/root/agentic-os",
+            "-b", File(ctx.filesDir, "workspace").apply { mkdirs() }.path + ":/root/workspace", // media/doc tools share files with Linux "-w", "/root",
             "/usr/bin/env", "-i", "HOME=/root", "USER=root", "TERM=xterm-256color", "LANG=C.UTF-8", "TMPDIR=/tmp",
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         val pb = ProcessBuilder(args + shell)

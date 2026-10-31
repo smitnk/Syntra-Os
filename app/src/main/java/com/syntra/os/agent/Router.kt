@@ -7,9 +7,9 @@ package com.syntra.os.agent
  */
 enum class Route(val tools: Set<String>) {
     CHAT(setOf()),
-    WEB(setOf("web_search", "web_fetch", "scrape", "save_output")),
+    WEB(setOf("web_search", "web_fetch", "scrape", "save_output", "make_document")),
     PHONE(setOf("phone_screen", "phone_tap", "phone_type", "phone_swipe", "phone_action", "open_app", "list_apps", "read_notifications")),
-    CODE(setOf("shell", "file_list", "file_read", "file_write", "code_agent", "claude_code", "hermes_agent", "todo")),
+    CODE(setOf("media_edit", "make_document", "shell", "file_list", "file_read", "file_write", "code_agent", "claude_code", "hermes_agent", "todo")),
     AUTOMATION(setOf("schedule_task", "list_schedules", "cancel_schedule", "http_request", "mcp_list_tools", "mcp_call")),
     GITHUB(setOf("github")),
     TEAM(setOf("ask_specialist", "consult_team")),
@@ -24,7 +24,7 @@ object Router {
             "research", "find out", "look up", "scrape", "article", "khabar", "samachar", "batao", "kya hai", "war", "election", "score"),
         Route.PHONE to listOf("open ", "screen", "tap", "click", "type ", "swipe", "scroll", "notification", "app ", "apps", "whatsapp",
             "youtube", "instagram", "settings", "call ", "message", "kholo", "chalu", "band karo"),
-        Route.CODE to listOf("code", "script", "python", "program", "build", "app ", "website", "compile", "run ", "install", "terminal",
+        Route.CODE to listOf("video", "audio", "ffmpeg", "trim", "mp4", "mp3", "pdf", "docx", "word file", "document", "convert", "code", "script", "python", "program", "build", "app ", "website", "compile", "run ", "install", "terminal",
             "linux", "shell", "file", "folder", "bug", "error", "git", "npm", "pip", "hermes", "aider"),
         Route.AUTOMATION to listOf("every ", "remind", "schedule", "tomorrow", "daily", "morning", "later", "zapier", "webhook", "post to",
             "upload", "email", "gmail", "sheet", "automate", "roz", "har din"),

@@ -346,6 +346,22 @@ class Agent(private val env: AgentEnv) {
             }
             "Added ${doc.title}: ${doc.chunks} passages" + if (doc.embedModel.isBlank()) " (keyword search only; download the embedding model for semantic search)" else ""
         }
+        "make_document" -> withContext(Dispatchers.IO) {
+            val fmt = a.str("format").orEmpty().lowercase().ifBlank { "pdf" }.removePrefix(".")
+            require(fmt == "pdf" || fmt == "docx") { "format must be pdf or docx" }
+            val slug = a.str("title").orEmpty().lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "-").trim('-').take(60).ifBlank { "document" }
+            val f = File(workspace, "docs/$slug.$fmt")
+            val md = a.str("markdown").orEmpty().ifBlank { error("markdown is empty") }
+            if (fmt == "pdf") com.syntra.os.media.Documents.writePdf(md, f) else com.syntra.os.media.Documents.writeDocx(md, f)
+            "Wrote ${f.relativeTo(workspace).path} (${f.length() / 1024} KB)"
+        }
+        "media_edit" -> {
+            check(com.syntra.os.device.Linux.installed(env.context)) { "media editing needs Linux: install Ubuntu in Workspace → Terminal" }
+            check(dot == null) { "media_edit runs on the shared workspace; ask Syntra directly" } // Linux sees the root workspace only
+            val cmd = com.syntra.os.media.Media.command(a.str("inputs").orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                a.str("output").orEmpty(), a.str("args").orEmpty())
+            com.syntra.os.device.Linux.run(env.context, cmd, 900_000)
+        }
         "review_page" -> reviewPage(a.str("title").orEmpty(), a.str("content").orEmpty())
         "file_read" -> safeFile(a.str("path").orEmpty()).readText().take(6000)
         "file_write" -> safeFile(a.str("path").orEmpty()).let { it.parentFile?.mkdirs(); it.writeText(a.str("content").orEmpty()); "Wrote ${it.name}." }

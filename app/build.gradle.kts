@@ -12,8 +12,8 @@ android {
         applicationId = "com.syntra.os"
         minSdk = 28 // Vulkan 1.1 symbols (GPU backend) exist in libvulkan from Android 9
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.14.0"
+        versionCode = 15
+        versionName = "0.15.0"
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild { cmake {
             arguments += listOf("-DCMAKE_BUILD_TYPE=Release")
