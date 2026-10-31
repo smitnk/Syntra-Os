@@ -118,10 +118,44 @@ object LfmPrompt {
         return null
     }
 
+    // LFM2/LFM2.5 native: <|tool_call_start|>[web_search(query="x"), open_app(name='YouTube')]<|tool_call_end|>
+    private val PY_CALLS = Regex("<\\|tool_call_start\\|>\\s*\\[(.*?)]\\s*<\\|tool_call_end\\|>", RegexOption.DOT_MATCHES_ALL)
+
+    /** `a(x="1, 2", n=3), b()` → [(a, {x, n}), (b, {})]. Quotes may be ' or "; commas inside quotes are kept. */
+    fun pythonicCalls(s: String): List<Pair<String, JsonObject>> {
+        val out = mutableListOf<Pair<String, JsonObject>>()
+        var i = 0
+        while (i < s.length) {
+            val open = s.indexOf('(', i).takeIf { it >= 0 } ?: break
+            val name = s.substring(i, open).trim().trimStart(',').trim()
+            val args = mutableMapOf<String, JsonElement>()
+            var j = open + 1; var key = StringBuilder(); var v = StringBuilder(); var inKey = true; var q: Char? = null
+            fun flush() { if (key.isNotBlank()) args[key.toString().trim()] = if (v.startsWith("\u0000")) JsonPrimitive(v.substring(1)) else value(v.toString()); key = StringBuilder(); v = StringBuilder(); inKey = true }
+            while (j < s.length) {
+                val c = s[j]
+                if (q != null) { if (c == '\\' && j + 1 < s.length) { v.append(s[j + 1]); j += 2; continue }; if (c == q) q = null else v.append(c) }
+                else when {
+                    c == ')' -> { flush(); break }
+                    c == ',' -> flush()
+                    c == '=' && inKey -> inKey = false
+                    (c == '"' || c == '\'') && !inKey -> { q = c; v.append('\u0000') }
+                    inKey -> key.append(c)
+                    else -> v.append(c)
+                }
+                j++
+            }
+            if (name.isNotBlank()) out += name to JsonObject(args)
+            i = j + 1
+        }
+        return out
+    }
+
     fun parse(raw: String): ChatReply {
         val text = THINK.replace(raw, "")
         val calls = mutableListOf<ToolCall>()
         var visible = text
+        PY_CALLS.findAll(text).forEach { m -> pythonicCalls(m.groupValues[1]).forEach { (n, a) -> calls += ToolCall("local${calls.size}", n, a.toString()) } }
+        visible = PY_CALLS.replace(visible, "")
         NATIVE.findAll(text).forEach { m ->
             val args = buildJsonObject { PARAM.findAll(m.groupValues[2]).forEach { p -> put(p.groupValues[1], value(p.groupValues[2])) } }
             calls += ToolCall("local${calls.size}", m.groupValues[1], args.toString())
@@ -174,6 +208,9 @@ data class CallMetric(val role: ModelRole, val loadMs: Long, val genMs: Long, va
     }
 }
 
+/** Models at or below this size (≈ a 350M–700M 4-bit model) are "small": the router can stay loaded next to the main model. */
+const val SMALL = 800_000_000L
+
 class LocalEngines(private val models: ModelManager, private val ctx: android.content.Context,
                    /** 0 = CPU only; >0 = layers offloaded to the GPU (Vulkan builds only). */
                    val gpuLayers: () -> Int = { 0 }) {
@@ -205,11 +242,13 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
         loaded[role]?.let { it.lastUse = System.currentTimeMillis(); lastLoadMs = 0; return it }
         val t0 = System.currentTimeMillis()
         val files = models.installed(role) ?: error("${role.label} model not downloaded — open Setup → On-device models")
-        val need = files.model.length() + (files.mmproj?.length() ?: 0) + 600_000_000L // weights + KV/compute buffers
-        // Phones under ~11 GB keep one model in RAM; bigger phones two.
+        val need = files.model.length() + 400_000_000L // weights + KV/compute buffers (projector loads later, only for images)
+        // Phones under ~11 GB keep one big model in RAM; bigger phones two. A small router (<1 GB) never counts or gets evicted for one.
         val maxResident = if (memInfo().totalMem > 11_000_000_000L) 2 else 1
-        while (loaded.size >= maxResident || (loaded.isNotEmpty() && memInfo().availMem - need < 1_500_000_000L)) {
-            val victim = loaded.entries.filter { !locks.getValue(it.key).isLocked && !bgLocks.getValue(it.key).isLocked }
+        fun big() = loaded.values.filter { it.caps.fileBytes > SMALL }
+        val isBig = files.model.length() > SMALL
+        while ((isBig && big().size >= maxResident) || (loaded.isNotEmpty() && memInfo().availMem - need < 1_500_000_000L)) {
+            val victim = loaded.entries.filter { !locks.getValue(it.key).isLocked && !bgLocks.getValue(it.key).isLocked && (it.value.caps.fileBytes > SMALL || !isBig) }
                 .minByOrNull { it.value.lastUse }?.key ?: break
             freeLoaded(victim)
         }
@@ -217,13 +256,38 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
         if (memInfo().availMem - need < 1_500_000_000L) com.syntra.os.rag.Knowledge.releaseEmbedder()
         // No hard refusal: Android's "available" excludes cached apps it will reclaim on demand (v0.7 refused wrongly).
         // The low-memory killer handles real pressure; inference runs at background priority so System UI stays safe.
-        val threads = if (Runtime.getRuntime().availableProcessors() >= 8) 4 else 2 // big cores only; leave the rest for the UI
-        val h = withContext(pool) { background(); LlamaNative.load(files.model.path, files.mmproj?.path, 4096, threads, threads, gpuLayers()) }
+        // Phone CPUs are big.LITTLE (e.g. Dimensity 7200: 2 fast + 6 slow cores). Token-by-token writing is memory-bound and runs
+        // at the speed of the slowest thread, so 2 threads (the fast cores) beat 4; reading the prompt is compute-bound and uses 4.
+        val cores = Runtime.getRuntime().availableProcessors()
+        val gen = 2; val batch = if (cores >= 8) 4 else 2
+        val small = files.model.length() <= SMALL
+        val h = withContext(pool) { background(); LlamaNative.load(files.model.path, null, if (small) 1024 else 4096, if (small) 1 else gen, if (small) 2 else batch, gpuLayers()) }
         val info = LlamaNative.info(h)
         val caps = Capabilities(arch = info[0], contextTrain = info[1].toIntOrNull() ?: 0, params = info[2].toLongOrNull() ?: 0,
-            description = info[3], hasTemplate = info[4].isNotBlank(), vision = LlamaNative.hasMedia(h), fileBytes = files.model.length())
+            description = info[3], hasTemplate = info[4].isNotBlank(), vision = files.mmproj != null, fileBytes = files.model.length())
         lastLoadMs = System.currentTimeMillis() - t0
         Loaded(h, caps.vision, System.currentTimeMillis(), files.model.parentFile!!, caps).also { loaded[role] = it; lastCaps[role] = caps }
+    }
+
+    /**
+     * Refuses to start a generation that would freeze the phone: very low RAM, or the phone already throttling from heat.
+     * Better a clear message than System UI stalls (users had to kill other apps).
+     */
+    private fun guardResources(keep: ModelRole) {
+        val m = memInfo()
+        if (m.lowMemory || m.availMem < 500_000_000L) {
+            unloadIdle(keep)
+            check(memInfo().availMem >= 400_000_000L) { "Phone memory is almost full (${m.availMem / 1_048_576} MB free). Close a few apps and try again." }
+        }
+        val pm = ctx.getSystemService(android.os.PowerManager::class.java)
+        if (android.os.Build.VERSION.SDK_INT >= 29 && pm.currentThermalStatus >= android.os.PowerManager.THERMAL_STATUS_SEVERE)
+            error("The phone is too hot to run the model right now. Let it cool for a minute.")
+    }
+
+    /** Frees models nobody is using (e.g. the router after a while), plus the RAG embedder. */
+    private fun unloadIdle(keep: ModelRole) {
+        com.syntra.os.rag.Knowledge.releaseEmbedder()
+        loaded.keys.filter { it != keep && !locks.getValue(it).isLocked && !bgLocks.getValue(it).isLocked }.forEach(::freeLoaded)
     }
 
     /** Inference threads run at background priority so taps, scrolling and System UI always win. */
@@ -242,7 +306,11 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
                 if (e.bg == 0L) e.bg = withContext(pool) { background(); LlamaNative.fork(e.handle, 2048, 2) }
                 e.bg
             }
+            guardResources(role)
             val useMedia = media?.takeIf { e.media && !background }
+            if (useMedia != null && !LlamaNative.hasMedia(handle)) withContext(pool) { // first image: load the projector now
+                models.installed(role)?.mmproj?.let { LlamaNative.attachMedia(handle, it.path, 4, gpuLayers()) }
+            }
             val marker = if (useMedia != null) LlamaNative.marker() else null
             // LFM models use their native tool format; every other model gets its own chat template + a generic tool protocol.
             val p = if (e.caps.isLfm) LfmPrompt.render(messages, tools, marker) else GenericPrompt.render(handle, messages, tools, marker)

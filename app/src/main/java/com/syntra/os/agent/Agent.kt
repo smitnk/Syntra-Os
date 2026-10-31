@@ -76,6 +76,8 @@ class Agent(private val env: AgentEnv) {
     private val os = AgenticOs(env.context)
     private var skill: Skill? = null
     private var code = false
+    /** On-device lead: keep the prompt short (every token is read on the phone CPU before the first word). */
+    private var lean = false
 
     companion object {
         /** MCP tool lists, fetched once per app session (Zapier etc. expose dozens of actions). */
@@ -105,12 +107,14 @@ class Agent(private val env: AgentEnv) {
         val lead = dot?.role?.takeIf { available(it) } ?: pickLead()
         // Route first: only the tool groups this request needs go into the prompt (much less to read on a phone).
         var routes = Router.keywordRoutes(goal)
-        if (routes.isEmpty() && settings.useD1Router && env.engines.installedRoles().contains(ModelRole.DECISION)) runCatching {
-            val p = env.engines.classify(ModelRole.DECISION, Router.d1Prompt(goal), Router.labels)
+        // Intent router: a small model (LFM2-350M) picks the tool group, so the main model reads only the tools it needs.
+        if (routes.isEmpty() && dot == null && !chatOnly && lead != ModelRole.TEXT && routerReady()) runCatching {
+            val p = env.engines.classify(ModelRole.TEXT, Router.d1Prompt(goal), Router.labels.map { " $it" }.toTypedArray()) // label follows "Category:" after a space
             routes = setOf(Router.fromLabel(Router.labels[p.indices.maxBy { p[it] }]))
-            env.log(Step(StepKind.THOUGHT, "d1-Omni-2B", "Routed as ${routes.first().name.lowercase()}"))
+            env.log(Step(StepKind.THOUGHT, "router", "Routed as ${routes.first().name.lowercase()}"))
         }
-        if (routes.isEmpty()) routes = setOf(Route.WEB) // unknown requests: allow a quick web lookup, nothing more
+        // Unknown requests: on-device, answer directly (every tool costs seconds of reading); cloud models may look things up.
+        if (routes.isEmpty()) routes = setOf(if (isLocal(lead)) Route.CHAT else Route.WEB)
         if (chatOnly) routes = setOf(Route.CHAT) // Ask mode: answer from the model and memory only (fastest)
         if (dot != null) routes = dot.allowedRoutes() + Route.CHAT // a Dot gets exactly its permitted groups
         val names = Router.toolNames(routes, code && (dot == null || Route.CODE in dot.allowedRoutes())).filter { dot?.allows(it) ?: true } + "review_page"
@@ -120,12 +124,14 @@ class Agent(private val env: AgentEnv) {
             (if (chatOnly) emptyList() else com.syntra.os.ext.ExtRuntime.definitions().filter { t ->
                 dot?.allows((t as JsonObject)["function"]?.jsonObject?.str("name").orEmpty()) ?: true }))
         val team = teamBriefing(goal, image)
+        lean = isLocal(lead)
         val messages = mutableListOf(message("system", systemPrompt())).apply {
-            addAll(history.takeLast(10))
+            addAll(history.takeLast(if (lean) 4 else 10))
             // Memory goes with the newest user turn, so the system prompt (cached on-device) rarely changes.
             val g = env.graph()
-            val mem = (g.search(goal).take(8) + g.nodes.takeLast(6)).distinctBy { it.id }
-                .joinToString("\n") { "- ${it.label} [${it.type}] ${it.notes.take(120)}" }
+            val small = isLocal(lead)
+            val mem = (g.search(goal).take(if (small) 4 else 8) + g.nodes.takeLast(if (small) 2 else 6)).distinctBy { it.id }
+                .joinToString("\n") { "- ${it.label} [${it.type}] ${it.notes.take(if (small) 80 else 120)}" }
             // RAG: top passages from the user's documents, numbered for citation. Only lexical/semantic hits get in.
             val hits = runCatching { com.syntra.os.rag.Knowledge.relevant(goal, 4) }.getOrDefault(emptyList())
             val docs = if (hits.isEmpty()) "" else "\n\n[From your documents — answer from these when relevant and cite as [n]; say so if they don't cover it]\n" +
@@ -149,6 +155,9 @@ class Agent(private val env: AgentEnv) {
         return loop(pickLead(), c.goal, c.messages.toMutableList(), tools, c.step, maxSteps, c)
     }
 
+    private fun isLocal(r: ModelRole) = settings.provider(settings.slot(r).providerId)?.local == true
+    private fun routerReady() = isLocal(ModelRole.TEXT) && env.engines.installedRoles().contains(ModelRole.TEXT)
+
     private fun pickLead(): ModelRole =
         settings.primaryRole.takeIf { available(it) } ?: listOf(ModelRole.OMNI, ModelRole.TEXT, ModelRole.VISION).firstOrNull { available(it) }
             ?: error("No chat model downloaded yet — open the Models screen and install one.")
@@ -157,7 +166,7 @@ class Agent(private val env: AgentEnv) {
                              start: Int, maxSteps: Int, cp0: TaskCheckpoint?): String {
         var cp = cp0
         val local = settings.provider(settings.slot(lead).providerId)?.local == true
-        val budget = if (local) 3000 else 24000 // on-device context is 4096 tokens; leave room for the reply
+        val budget = if (local) 1800 else 24000 // on-device context is 4096 tokens; leave room for the reply
         var reprompts = 0
         for (step in start until maxSteps) {
             coroutineContext.ensureActive()
@@ -279,7 +288,8 @@ class Agent(private val env: AgentEnv) {
             "or code_agent → run with shell → fix errors → repeat until it works. Then say what you built and how to run it.")
         com.syntra.os.device.Linux.installedTools(env.context).takeIf { it.isNotEmpty() }?.let { appendLine("Installed in Linux: ${it.joinToString()}.") }
         append(os.context())
-        val skills = skill?.let { listOf(it) } ?: env.skills.filter { it.enabled }
+        // On-device, only the skill the user called with /name is added; switched-on skills ride along with cloud models only.
+        val skills = skill?.let { listOf(it) } ?: if (lean) emptyList() else env.skills.filter { it.enabled }
         skills.forEach { appendLine("\n## Skill: ${it.name}\n${it.prompt.take(1500)}") }
         dot?.let { appendLine("\n## You are the Dot \"${it.name}\"\n${it.instructions.take(1500)}\nYour files live in your own folder; paths are relative to it.") }
         appendLine("To save a document the user will keep, call review_page with the full Markdown draft; the user approves before it is saved.")
@@ -535,7 +545,11 @@ Use "Me" for the user.
 
 User: $userText
 Assistant: ${answer.take(800)}"""
-    val reply = callModel(env, env.settings.primaryRole, listOf(message("user", prompt)), null, null, null, background = true).content
+    // On-device, memories are extracted by the small router model so the main model is never busy twice per message.
+    val lead = env.settings.primaryRole
+    val local = env.settings.provider(env.settings.slot(lead).providerId)?.local == true
+    val role = if (!local) lead else ModelRole.TEXT.takeIf { env.engines.installedRoles().contains(it) } ?: return
+    val reply = callModel(env, role, listOf(message("user", prompt)), null, null, null, background = role == lead).content
     val start = reply.indexOf('{'); val end = reply.lastIndexOf('}')
     if (start < 0 || end <= start) return
     val o = runCatching { json.parseToJsonElement(com.syntra.os.local.LfmPrompt.lenient(reply.substring(start, end + 1))).jsonObject }.getOrNull() ?: return

@@ -56,8 +56,8 @@ fun ModelsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     OutlinedTextField(repo, { repo = it }, Modifier.fillMaxWidth(), singleLine = true,
                         label = { Text("owner/repo") }, placeholder = { Text("unsloth/Qwen3-1.7B-GGUF") })
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("unsloth/Qwen3-1.7B-GGUF", "unsloth/gemma-3-1b-it-GGUF", "bartowski/Llama-3.2-3B-Instruct-GGUF").forEach {
-                            AssistChip(onClick = { repo = it }, label = { Text(it.substringAfter('/').removeSuffix("-GGUF")) })
+                        com.syntra.os.local.RECOMMENDED.forEach { (r, why) ->
+                            AssistChip(onClick = { repo = r }, label = { Text(r.substringAfter('/').removeSuffix("-GGUF") + " · " + why) })
                         }
                     }
                     Button({ vm.installCustom(repo) }, enabled = repo.isNotBlank() && vm.modelBusy == null) { Text("Install") }
@@ -68,7 +68,7 @@ fun ModelsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         }
         item { Text("Installed models", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() }) }
         if (vm.customModels.isEmpty()) item {
-            Text("None yet. Built-in LFM3 models are managed in Settings → On-device models.", color = scheme.onSurfaceVariant,
+            Text("None yet. Tap a recommended model above: one main model (LFM2.5-VL-1.6B) and the LFM2-350M router are all you need.", color = scheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium)
         }
         items(vm.customModels, key = { it }) { id ->
@@ -83,6 +83,8 @@ fun ModelsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     if (vm.modelBusy == id) LinearProgressIndicator(Modifier.fillMaxWidth())
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (!isMain) FilledTonalButton({ vm.useAsMain(id) }) { Text("Use as main") }
+                        if (vm.settings.routerModelId != id) TextButton({ vm.useAsRouter(id) }) { Text("Use as router") }
+                        else Text("ROUTER", style = MaterialTheme.typography.labelSmall, color = scheme.primary, modifier = Modifier.align(Alignment.CenterVertically))
                         TextButton({ vm.probeModel(id, bench = false) }, enabled = vm.modelBusy == null) { Text("Probe") }
                         TextButton({ vm.probeModel(id, bench = true) }, enabled = vm.modelBusy == null) { Text("Benchmark") }
                         TextButton({ vm.deleteCustom(id) }) { Text("Delete", color = scheme.error) }

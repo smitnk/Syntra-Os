@@ -10,7 +10,8 @@ data class Capabilities(
     val arch: String, val contextTrain: Int, val params: Long, val description: String,
     val hasTemplate: Boolean, val vision: Boolean, val fileBytes: Long,
 ) {
-    val isLfm get() = arch.lowercase().startsWith("lfm")
+    /** LFM3 has its own tool markup; LFM2/2.5 and every other model use their chat template + the generic JSON protocol. */
+    val isLfm get() = arch.lowercase().startsWith("lfm3")
     fun summary() = buildString {
         append(arch.ifBlank { "unknown arch" }); append(" · ")
         if (params > 0) append("%.1fB params · ".format(params / 1e9))

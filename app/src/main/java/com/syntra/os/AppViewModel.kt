@@ -109,9 +109,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Older installs lack the on-device / OpenClaw / Hermes providers. */
     private fun migrate(s0: Settings): Settings {
-        var s = if (s0.primaryRole == ModelRole.DECISION) s0.copy(primaryRole = ModelRole.OMNI) else s0 // d1 can't chat
-        // Omni is the all-rounder (text + images + audio): make it the lead once, as soon as it's downloaded.
-        if (!s.omniDefaultApplied && models.installed(ModelRole.OMNI) != null) s = s.copy(primaryRole = ModelRole.OMNI, omniDefaultApplied = true)
+        // v0.16: one main model (OMNI slot) + router (TEXT slot); continuous listening off once (it cost CPU all the time).
+        var s = s0.copy(primaryRole = ModelRole.OMNI)
+        if (!s.leanDefaultsApplied) s = s.copy(alwaysListening = false, leanDefaultsApplied = true)
         val missing = DEFAULT_PROVIDERS.filter { d -> s.providers.none { it.id == d.id } }
         return if (missing.isEmpty()) s else s.copy(providers = missing + s.providers)
     }
@@ -431,6 +431,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun terminalAi(prompt: String) {
         if (termBusy || prompt.isBlank()) return
         linuxLines += "» $prompt"
+        // Known requests ("install hermes", "run hermes agent …", "install ffmpeg") become the exact command, shown first.
+        com.syntra.os.device.TermIntents.match(prompt)?.let { cmd ->
+            linuxLines += "  will run: $cmd"
+            termBusy = true
+            termJob = viewModelScope.launch {
+                try { if (askApproval("[Runs in Linux] $cmd")) linuxSend(cmd) else linuxLines += "[cancelled]" }
+                finally { termBusy = false; pendingApproval = null }
+            }
+            return
+        }
+        linuxLines += "· thinking with the main model… (Stop to cancel)"
         val cloud = termAiProvider != com.syntra.os.core.ON_DEVICE
         // Same agent, Code mode; for cloud, the lead slot points at the chosen provider/model for this run only.
         val s = if (!cloud) settings else settings.copy(slots = settings.slots.map {
@@ -550,7 +561,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var modelBusy by mutableStateOf<String?>(null); private set
 
     private fun applyOverrides() {
-        models.overrides = settings.mainModelId?.takeIf { it in models.customModels() }?.let { mapOf(settings.primaryRole to it) } ?: emptyMap()
+        val custom = models.customModels()
+        models.overrides = listOfNotNull(settings.mainModelId?.takeIf { it in custom }?.let { settings.primaryRole to it },
+            settings.routerModelId?.takeIf { it in custom }?.let { ModelRole.TEXT to it }).toMap()
     }
 
     fun installCustom(repo: String) {
@@ -568,12 +581,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Make an installed custom model the main model (null = back to the built-in default). */
     fun useAsMain(id: String?) {
-        updateSettings(settings.copy(mainModelId = id, primaryRole = if (settings.primaryRole == ModelRole.DECISION) ModelRole.OMNI else settings.primaryRole))
+        updateSettings(settings.copy(mainModelId = id, primaryRole = ModelRole.OMNI)) // the main model always takes the OMNI slot
         applyOverrides(); engines.unloadAll()
     }
 
+    fun useAsRouter(id: String?) { updateSettings(settings.copy(routerModelId = id)); applyOverrides(); engines.unloadAll() }
+
     fun deleteCustom(id: String) {
         if (settings.mainModelId == id) useAsMain(null)
+        if (settings.routerModelId == id) useAsRouter(null)
         models.deleteCustom(id); customModels = models.customModels(); modelInfo.remove(id)
     }
 

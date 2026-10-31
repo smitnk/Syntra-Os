@@ -38,7 +38,7 @@ import com.syntra.os.agent.Dot
 import com.syntra.os.core.ModelRole
 
 private val GROUPS = listOf("WEB" to "Web research", "PHONE" to "Control phone", "CODE" to "Linux, code & tools", "AUTOMATION" to "Schedules & apps (MCP)",
-    "GITHUB" to "GitHub", "TEAM" to "Ask other models")
+    "GITHUB" to "GitHub")
 
 /** Specialist agents: who they are, what they may touch, and which model leads them. */
 @Composable

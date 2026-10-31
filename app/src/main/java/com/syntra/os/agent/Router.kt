@@ -40,8 +40,10 @@ object Router {
     val labels = arrayOf("chat", "web", "phone", "code", "automation")
     fun fromLabel(l: String) = when (l) { "web" -> Route.WEB; "phone" -> Route.PHONE; "code" -> Route.CODE; "automation" -> Route.AUTOMATION; else -> Route.CHAT }
 
-    fun d1Prompt(text: String) = "<|im_start|>user\nWhich kind of task is this? Options: chat, web, phone, code, automation.\n" +
-        "Task: $text<|im_end|>\n<|im_start|>assistant\n<think></think>Answer:"
+    /** ChatML (LFM2/Qwen family). chat = talk or explain; web = needs current facts; phone = control apps; code = files/Linux/media; automation = schedules/apps. */
+    fun d1Prompt(text: String) = "<|im_start|>system\nClassify the user's task. chat = conversation, explanation, writing; web = needs internet facts or news; " +
+        "phone = open or control phone apps; code = files, terminal, programming, video/audio/PDF; automation = reminders, schedules, email.<|im_end|>\n" +
+        "<|im_start|>user\n$text<|im_end|>\n<|im_start|>assistant\nCategory:"
 
     /** Tool names for the chosen routes (MCP tools ride along with AUTOMATION). */
     fun toolNames(routes: Set<Route>, code: Boolean): Set<String> =

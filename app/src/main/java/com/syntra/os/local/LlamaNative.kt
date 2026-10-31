@@ -14,6 +14,8 @@ object LlamaNative {
     @JvmStatic external fun info(handle: Long): Array<String>
     @JvmStatic external fun applyTemplate(handle: Long, roles: Array<String>, contents: Array<String>): String?
     @JvmStatic external fun hasMedia(handle: Long): Boolean
+    /** Loads the projector into an already-loaded model (first image of a session). */
+    @JvmStatic external fun attachMedia(handle: Long, mmproj: String, nThreads: Int, nGpuLayers: Int): Boolean
     @JvmStatic external fun marker(): String
     /** Embedding model (RAG). Freed with [free]. */
     @JvmStatic external fun loadEmbedder(path: String, nThreads: Int): Long

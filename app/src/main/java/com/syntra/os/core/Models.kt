@@ -4,11 +4,15 @@ import kotlinx.serialization.Serializable
 
 /** Roles mirror the LFM3 family: text, vision, audio, omni-generative, omni-decision. */
 enum class ModelRole(val label: String, val defaultModel: String) {
-    TEXT("Text", "LFM3-1.7B"),
+    // Two models do everything: OMNI = the main agent model (sees images), TEXT = the small intent router + memory extractor.
+    // VISION/AUDIO/DECISION stay only so old saved settings still load; they are hidden everywhere.
+    TEXT("Router", "LFM2-350M"),
     VISION("Vision", "LFM3-VL-2B"),
     AUDIO("Audio", "LFM3-Audio-2B"),
-    OMNI("Omni · Generative", "LFM3-Omni-2B"),
-    DECISION("Omni · Decision", "d1-Omni-2B"),
+    OMNI("Main", "LFM2.5-VL-1.6B"),
+    DECISION("Omni · Decision", "d1-Omni-2B");
+
+    companion object { val shown = listOf(OMNI, TEXT) }
 }
 
 const val ON_DEVICE = "on-device"
@@ -48,13 +52,16 @@ data class Settings(
     val mcpServers: List<McpServer> = emptyList(),
     val githubToken: String = "",
     val speakReplies: Boolean = true,
-    val alwaysListening: Boolean = true,
+    val alwaysListening: Boolean = false, // continuous listening costs CPU and RAM all the time; the mic button still works
     val wakeWords: String = "syntra, jarvis",
     val askPhoneActions: Boolean = true,
     val autoMemory: Boolean = true,
     val teamPlanning: Boolean = false, // unused since v0.7 (d1 is a classifier); kept so old settings files load
     /** Ask the d1 classifier to route requests keywords can't place (swaps models on 8 GB phones). */
     val useD1Router: Boolean = false,
+    /** Installed custom model used as the router (TEXT role); null = the built-in router download. */
+    val routerModelId: String? = null,
+    val leanDefaultsApplied: Boolean = false,
     /** Offload model layers to the GPU (Vulkan builds only). */
     val useGpu: Boolean = false,
     /** One-time switch of the default lead model to Omni once it's downloaded. */

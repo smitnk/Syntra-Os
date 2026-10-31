@@ -55,6 +55,7 @@ Java_com_syntra_os_local_LlamaNative_load(JNIEnv *env, jclass, jstring jpath, js
     cp.n_batch = e->n_batch;
     cp.n_threads = n_threads;
     cp.n_threads_batch = n_threads_batch; // prompt reading is compute-bound: use every core
+    cp.type_k = GGML_TYPE_Q8_0; // half-size K cache: less RAM per chat, same quality in practice (V stays F16: no flash-attn requirement)
     e->ctx = llama_init_from_model(e->model, cp);
     if (!e->ctx) { llama_model_free(e->model); delete e; throw_rt(env, "failed to create context"); return 0; }
     e->vocab = llama_model_get_vocab(e->model);
@@ -365,4 +366,16 @@ Java_com_syntra_os_local_LlamaNative_embed(JNIEnv *env, jclass, jlong h, jstring
     jfloatArray arr = env->NewFloatArray(d);
     env->SetFloatArrayRegion(arr, 0, d, out.data());
     return arr;
+}
+
+// Load the vision/audio projector on demand (first image), so text-only chats don't pay its RAM.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_syntra_os_local_LlamaNative_attachMedia(JNIEnv *env, jclass, jlong h, jstring jmmproj, jint n_threads, jint n_gpu_layers) {
+    auto *e = reinterpret_cast<Engine *>(h);
+    if (e->mtmd) return true;
+    auto mpp = mtmd_context_params_default();
+    mpp.use_gpu = n_gpu_layers > 0;
+    mpp.n_threads = n_threads;
+    e->mtmd = mtmd_init_from_file(jstr(env, jmmproj).c_str(), e->model, mpp);
+    return e->mtmd != nullptr;
 }

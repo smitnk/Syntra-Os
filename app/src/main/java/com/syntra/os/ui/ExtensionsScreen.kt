@@ -22,6 +22,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Warning
@@ -129,25 +131,62 @@ fun ExtensionsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             }
         }
         item {
-            Text("Skills & agents", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() }.padding(top = 8.dp))
-            Text("Use any of them with /name in chat. Switched-on skills are added to every task (keep few on for speed).",
+            Text("Your skills", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() }.padding(top = 8.dp))
+            Text("Use any skill or agent with /name in chat. Switched-on skills apply to cloud models only (on-device stays fast).",
                 style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
             if (vm.skills.size > 12) OutlinedTextField(skillFilter, { skillFilter = it }, Modifier.fillMaxWidth().padding(top = 8.dp),
-                singleLine = true, label = { Text("Filter ${vm.skills.size} skills") })
+                singleLine = true, label = { Text("Search ${vm.skills.size} skills and agents") })
         }
-        val shown = vm.skills.filter { skillFilter.isBlank() || skillFilter.lowercase() in (it.name + " " + it.description).lowercase() }.take(150)
-        items(shown, key = { it.name + it.source }) { s ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(s.name, style = MaterialTheme.typography.bodyLarge)
-                    Text("/" + com.syntra.os.agent.AgenticOs.slug(s.name) + " · " + s.description, style = MaterialTheme.typography.bodySmall,
-                        color = scheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        val q = skillFilter.trim().lowercase()
+        fun hit(s: com.syntra.os.core.Skill) = q.isEmpty() || q in (s.name + " " + s.description).lowercase()
+        // Built-in and your own skills: flat list with switches.
+        items(vm.skills.filter { !it.source.startsWith("ext:") && hit(it) }, key = { "own" + it.name + it.source }) { s -> SkillRow(s) { vm.toggleSkill(s) } }
+        // Each extension is its own folder; inside, the repo's own folders (e.g. engineering/, design/) become sub-folders.
+        vm.extensions.forEach { e ->
+            val id = e.manifest.id
+            val mine = vm.skills.filter { it.source == "ext:$id" && hit(it) }
+            if (mine.isEmpty()) return@forEach
+            val folderOf = (e.manifest.agents.map { it.name to it.file } + e.manifest.skills.map { it.name to it.file })
+                .associate { (n, f) -> n to f.split('/').let { parts -> if (parts.size > 2 && parts[0] in setOf("skills", ".claude", ".agents")) "" else if (parts.size > 1) parts[0] else "" } }
+            item(key = "ext-$id") { Column {
+                var open by rememberSaveable(id) { mutableStateOf(q.isNotEmpty()) }
+                Folder("${e.manifest.name} · ${mine.size}", open || q.isNotEmpty(), level = 0) { open = !open }
+                if (open || q.isNotEmpty()) {
+                    mine.groupBy { folderOf[it.name].orEmpty() }.toSortedMap().forEach { (folder, list) ->
+                        if (folder.isBlank()) list.forEach { SkillRow(it, null) }
+                        else {
+                            var sub by rememberSaveable(id + folder) { mutableStateOf(false) }
+                            Folder("${folder.replace('-', ' ').replaceFirstChar { it.uppercase() }} · ${list.size}", sub || q.isNotEmpty(), level = 1) { sub = !sub }
+                            if (sub || q.isNotEmpty()) list.forEach { SkillRow(it, null, indent = 2) }
+                        }
+                    }
                 }
-                Switch(s.enabled, { vm.toggleSkill(s) })
-            }
+            } }
         }
     }
 }
+
+@Composable
+private fun Folder(title: String, open: Boolean, level: Int, onClick: () -> Unit) =
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = (level * 16).dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Icon(if (open) Icons.Outlined.FolderOpen else Icons.Outlined.Folder, null, tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(10.dp))
+        Text(title, style = if (level == 0) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        Text(if (open) "Hide" else "Show", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+
+/** One skill or agent. [onToggle] null = extension agents, which are only called by /name (no always-on switch). */
+@Composable
+private fun SkillRow(s: com.syntra.os.core.Skill, onToggle: (() -> Unit)?, indent: Int = 1) =
+    Row(Modifier.fillMaxWidth().padding(start = if (onToggle == null) (indent * 16).dp else 0.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(s.name, style = MaterialTheme.typography.bodyLarge)
+            Text("/" + com.syntra.os.agent.AgenticOs.slug(s.name) + " · " + s.description, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        if (onToggle != null) Switch(s.enabled, { onToggle() })
+    }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

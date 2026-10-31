@@ -155,7 +155,7 @@ fun Orb(energy: Float, modifier: Modifier = Modifier, level: Float = 0f) {
 @Composable
 private fun TeamRow(active: Set<ModelRole>, busy: Boolean, installed: Set<ModelRole> = ModelRole.entries.toSet()) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        ModelRole.entries.forEach { r ->
+        ModelRole.shown.forEach { r ->
             val on = r in active
             Column(Modifier.padding(horizontal = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(Modifier.size(30.dp).background(if (on) Clay else Raised, CircleShape)

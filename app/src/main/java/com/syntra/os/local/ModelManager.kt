@@ -14,13 +14,22 @@ import okhttp3.Request
 import java.io.File
 import kotlin.coroutines.coroutineContext
 
-/** LFM3 GGUF repos on Hugging Face, one per role. */
+/** Default GGUF repos: a phone-sized vision model as the main agent and a tiny router. Any other GGUF can be installed in Models. */
 val CATALOG: Map<ModelRole, String> = mapOf(
-    ModelRole.TEXT to "LiquidAI/LFM3-1.7B-GGUF",
+    ModelRole.OMNI to "LiquidAI/LFM2.5-VL-1.6B-GGUF",
+    ModelRole.TEXT to "LiquidAI/LFM2-350M-GGUF",
     ModelRole.VISION to "LiquidAI/LFM3-VL-2B-GGUF",
     ModelRole.AUDIO to "LiquidAI/LFM3-Audio-2B-GGUF",
-    ModelRole.OMNI to "LiquidAI/LFM3-Omni-2B-GGUF",
     ModelRole.DECISION to "LiquidAI/d1-Omni-2B-GGUF",
+)
+
+/** Shown as one-tap installs on the Models screen. */
+val RECOMMENDED = listOf(
+    "LiquidAI/LFM2.5-VL-1.6B-GGUF" to "Main · sees images · recommended",
+    "LiquidAI/LFM2.5-VL-450M-GGUF" to "Main · sees images · fastest",
+    "LiquidAI/LFM2.5-1.2B-Instruct-GGUF" to "Main · text only · fast",
+    "LiquidAI/LFM2-350M-GGUF" to "Router",
+    "LiquidAI/LFM3-Omni-2B-GGUF" to "Main · images + audio · heavy",
 )
 
 /** Multilingual embedding model for the knowledge base (RAG). */

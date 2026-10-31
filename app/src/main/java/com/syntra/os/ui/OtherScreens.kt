@@ -113,9 +113,9 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
 
         item {
             val tick = vm.installedTick // re-read files after downloads
-            Section("On-device models (LFM3 · llama.cpp)") {
+            Section("On-device models (llama.cpp)") {
                 Text("Downloaded from Hugging Face once, then fully offline. ~1–2 GB each; Wi-Fi recommended.", color = Dim, fontSize = 12.sp)
-                ModelRole.entries.forEach { r ->
+                ModelRole.shown.forEach { r ->
                     val files = remember(tick, r) { vm.models.installed(r) }
                     val dl = vm.downloads[r]
                     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -256,15 +256,9 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         }
 
         item {
-            Section("Model team (LFM3 family)") {
-                Text("Lead model — plans and calls tools. The others are consulted via ask_specialist.", color = Dim, fontSize = 12.sp)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ModelRole.entries.take(3).forEach { r -> FilterChip(s.primaryRole == r, { vm.updateSettings(s.copy(primaryRole = r)) }, { Text(r.name.lowercase()) }) }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ModelRole.entries.drop(3).filter { it != ModelRole.DECISION }.forEach { r -> FilterChip(s.primaryRole == r, { vm.updateSettings(s.copy(primaryRole = r)) }, { Text(r.name.lowercase()) }) }
-                }
-                s.slots.forEach { slot ->
+            Section("Models") {
+                Text("Main = the agent model (plans, calls tools, sees images). Router = a tiny model that sorts each request and saves memories.", color = Dim, fontSize = 12.sp)
+                s.slots.filter { it.role in ModelRole.shown }.forEach { slot ->
                     Text(slot.role.label, color = Violet, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
                     OutlinedTextField(slot.model, { m -> vm.updateSettings(s.copy(slots = s.slots.map { if (it.role == slot.role) it.copy(model = m) else it })) },
                         Modifier.fillMaxWidth(), label = { Text("Model id") }, singleLine = true)
