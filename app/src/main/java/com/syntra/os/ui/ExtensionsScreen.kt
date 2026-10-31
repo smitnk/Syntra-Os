@@ -140,7 +140,7 @@ fun ExtensionsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         val q = skillFilter.trim().lowercase()
         fun hit(s: com.syntra.os.core.Skill) = q.isEmpty() || q in (s.name + " " + s.description).lowercase()
         // Built-in and your own skills: flat list with switches.
-        items(vm.skills.filter { !it.source.startsWith("ext:") && hit(it) }, key = { "own" + it.name + it.source }) { s -> SkillRow(s) { vm.toggleSkill(s) } }
+        items(vm.skills.filter { !it.source.startsWith("ext:") && hit(it) }, key = { "own" + it.name + it.source }) { s -> SkillRow(s, onToggle = { vm.toggleSkill(s) }) }
         // Each extension is its own folder; inside, the repo's own folders (e.g. engineering/, design/) become sub-folders.
         vm.extensions.forEach { e ->
             val id = e.manifest.id
