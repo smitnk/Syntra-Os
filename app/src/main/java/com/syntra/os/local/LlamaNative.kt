@@ -10,6 +10,9 @@ object LlamaNative {
     @JvmStatic external fun fork(handle: Long, nCtx: Int, nThreads: Int): Long
     @JvmStatic external fun saveCheckpoint(handle: Long, path: String): Boolean
     @JvmStatic external fun loadCheckpoint(handle: Long, path: String): Boolean
+    /** [arch, nCtxTrain, nParams, description, chatTemplate] */
+    @JvmStatic external fun info(handle: Long): Array<String>
+    @JvmStatic external fun applyTemplate(handle: Long, roles: Array<String>, contents: Array<String>): String?
     @JvmStatic external fun hasMedia(handle: Long): Boolean
     @JvmStatic external fun marker(): String
     @JvmStatic external fun stop(handle: Long)

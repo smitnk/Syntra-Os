@@ -37,8 +37,36 @@ fun pickFiles(names: List<String>): Pair<String, String?>? {
 class ModelManager(private val root: File) {
     private fun dir(role: ModelRole) = File(root, "models/${role.name.lowercase()}").apply { mkdirs() }
 
+    /** role → custom model id: lets any installed GGUF take a role (e.g. the main model). */
+    @Volatile var overrides: Map<ModelRole, String> = emptyMap()
+
+    private fun customDir(id: String) = File(root, "models/custom/$id")
+    fun customModels(): List<String> = File(root, "models/custom").listFiles().orEmpty()
+        .filter { d -> d.listFiles().orEmpty().any { it.name.endsWith(".gguf") } }.map { it.name }.sorted()
+    fun deleteCustom(id: String) { customDir(id).deleteRecursively() }
+
+    /** Any Hugging Face GGUF repo: picks the phone-friendly quant (+ projector if present). */
+    suspend fun downloadCustom(repo: String, onProgress: (String) -> Unit): String {
+        val r = repo.trim().removePrefix("https://huggingface.co/").trim('/')
+        require(Regex("[\\w.-]+/[\\w.-]+").matches(r)) { "Use owner/repo, e.g. unsloth/Qwen3-1.7B-GGUF" }
+        val resp = httpCall("https://huggingface.co/api/models/$r")
+        if (resp.code != 200) error("Hugging Face HTTP ${resp.code} for $r")
+        val names = (json.parseToJsonElement(resp.body).jsonObject["siblings"] as? JsonArray).orEmpty()
+            .mapNotNull { it.jsonObject.str("rfilename") }
+        val (main, proj) = pickFiles(names) ?: error("no .gguf file in $r")
+        val id = main.removeSuffix(".gguf").replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val d = customDir(id).apply { mkdirs() }
+        listOfNotNull(main, proj).forEach { fetch(r, it, File(d, it), onProgress) }
+        return id
+    }
+
     fun installed(role: ModelRole): ModelFiles? {
-        val files = dir(role).listFiles().orEmpty().filter { it.name.endsWith(".gguf") }
+        overrides[role]?.let { id -> filesIn(customDir(id))?.let { return it } }
+        return filesIn(dir(role))
+    }
+
+    private fun filesIn(d: File): ModelFiles? {
+        val files = d.listFiles().orEmpty().filter { it.name.endsWith(".gguf") }
         val main = files.firstOrNull { "mmproj" !in it.name.lowercase() } ?: return null
         return ModelFiles(main, files.firstOrNull { "mmproj" in it.name.lowercase() })
     }

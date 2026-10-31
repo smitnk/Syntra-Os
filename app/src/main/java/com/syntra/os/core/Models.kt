@@ -59,6 +59,8 @@ data class Settings(
     val useGpu: Boolean = false,
     /** One-time switch of the default lead model to Omni once it's downloaded. */
     val omniDefaultApplied: Boolean = false,
+    /** Installed custom GGUF used as the main (lead) model instead of the role's default; null = default. */
+    val mainModelId: String? = null,
     /** Ask before shell / code_agent / Hermes run in the app's Ubuntu sandbox. */
     val askLinux: Boolean = true,
     val telegramToken: String = "",

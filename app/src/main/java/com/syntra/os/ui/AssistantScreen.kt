@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.AddComment
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Stop
@@ -183,7 +184,7 @@ private fun ModeSwitch(voiceOn: Boolean, state: VoiceState, onChange: (Boolean) 
 }
 
 @Composable
-fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean) -> Unit, onAttach: () -> Unit, modifier: Modifier = Modifier) {
+fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean) -> Unit, onAttach: () -> Unit, onMenu: () -> Unit = {}, modifier: Modifier = Modifier) {
     var input by remember { mutableStateOf("") }
     var showHistory by remember { mutableStateOf(false) }
     if (showHistory) HistorySheet(vm) { showHistory = false }
@@ -195,6 +196,7 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean
 
     Column(modifier.fillMaxSize().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onMenu) { Icon(Icons.Outlined.Menu, "Open menu: models and settings", tint = Ink) }
             IconButton({ showHistory = true }) { Icon(Icons.Outlined.History, "Chat history", tint = Ink) }
             Text("Syntra", style = MaterialTheme.typography.headlineSmall, color = Ink, modifier = Modifier.weight(1f))
             ModeSwitch(vm.settings.alwaysListening, vm.voiceState, onToggleVoice)

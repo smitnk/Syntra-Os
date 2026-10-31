@@ -147,6 +147,45 @@ Java_com_syntra_os_local_LlamaNative_scoreLabels(JNIEnv *env, jclass, jlong h, j
     return out;
 }
 
+// Model facts for capability detection: architecture, training context, size, and its built-in chat template.
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_syntra_os_local_LlamaNative_info(JNIEnv *env, jclass, jlong h) {
+    auto *e = reinterpret_cast<Engine *>(h);
+    char arch[128] = {0}, desc[256] = {0};
+    llama_model_meta_val_str(e->model, "general.architecture", arch, sizeof arch);
+    llama_model_desc(e->model, desc, sizeof desc);
+    const char *tmpl = llama_model_chat_template(e->model, nullptr);
+    std::string vals[5] = { arch, std::to_string(llama_model_n_ctx_train(e->model)), std::to_string(llama_model_n_params(e->model)),
+                            desc, tmpl ? tmpl : "" };
+    jobjectArray out = env->NewObjectArray(5, env->FindClass("java/lang/String"), nullptr);
+    for (int i = 0; i < 5; i++) env->SetObjectArrayElement(out, i, env->NewStringUTF(vals[i].c_str()));
+    return out;
+}
+
+// Formats a conversation with the model's own chat template (llama.cpp's built-in template list).
+// Returns null when the template isn't one llama.cpp recognises; the caller then uses ChatML.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_syntra_os_local_LlamaNative_applyTemplate(JNIEnv *env, jclass, jlong h, jobjectArray jroles, jobjectArray jcontents) {
+    auto *e = reinterpret_cast<Engine *>(h);
+    const char *tmpl = llama_model_chat_template(e->model, nullptr);
+    if (!tmpl) return nullptr;
+    const int n = env->GetArrayLength(jroles);
+    std::vector<std::string> roles(n), contents(n);
+    std::vector<llama_chat_message> msgs(n);
+    size_t total = 0;
+    for (int i = 0; i < n; i++) {
+        roles[i] = jstr(env, (jstring) env->GetObjectArrayElement(jroles, i));
+        contents[i] = jstr(env, (jstring) env->GetObjectArrayElement(jcontents, i));
+        total += contents[i].size();
+    }
+    for (int i = 0; i < n; i++) msgs[i] = { roles[i].c_str(), contents[i].c_str() };
+    std::vector<char> buf(total * 2 + 1024);
+    int r = llama_chat_apply_template(tmpl, msgs.data(), n, true, buf.data(), (int) buf.size());
+    if (r < 0) return nullptr;
+    if (r > (int) buf.size()) { buf.resize(r + 1); r = llama_chat_apply_template(tmpl, msgs.data(), n, true, buf.data(), (int) buf.size()); }
+    return env->NewStringUTF(std::string(buf.data(), r).c_str());
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_syntra_os_local_LlamaNative_hasMedia(JNIEnv *, jclass, jlong h) {
     return reinterpret_cast<Engine *>(h)->mtmd != nullptr;

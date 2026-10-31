@@ -89,6 +89,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         store.save("settings", Settings.serializer(), settings) // persists a freshly generated local API key
+        applyOverrides()
         server.start()
         runCatching { com.syntra.os.device.Linux.configure(app, settings.localApiKey) }
         java.io.File(app.filesDir, "crash.txt").takeIf { it.exists() }?.let { f ->
@@ -307,6 +308,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 delay(6000); downloads.remove(role)
             }
             installedTick++
+        }
+    }
+
+    // ---- Any-model support (Models screen) ----
+    var customModels by mutableStateOf(models.customModels()); private set
+    val modelInfo = mutableStateMapOf<String, String>() // id → capability / benchmark text
+    var modelBusy by mutableStateOf<String?>(null); private set
+
+    private fun applyOverrides() {
+        models.overrides = settings.mainModelId?.takeIf { it in models.customModels() }?.let { mapOf(settings.primaryRole to it) } ?: emptyMap()
+    }
+
+    fun installCustom(repo: String) {
+        if (modelBusy != null) return
+        modelBusy = repo
+        viewModelScope.launch {
+            try {
+                val id = models.downloadCustom(repo) { downloads[ModelRole.OMNI] = it; modelInfo[repo] = it }
+                modelInfo[id] = "Installed. Tap Probe to detect capabilities."
+                modelInfo.remove(repo)
+            } catch (e: Exception) { modelInfo[repo] = "Failed: ${e.message}" }
+            finally { downloads.remove(ModelRole.OMNI); modelBusy = null; customModels = models.customModels() }
+        }
+    }
+
+    /** Make an installed custom model the main model (null = back to the built-in default). */
+    fun useAsMain(id: String?) {
+        updateSettings(settings.copy(mainModelId = id, primaryRole = if (settings.primaryRole == ModelRole.DECISION) ModelRole.OMNI else settings.primaryRole))
+        applyOverrides(); engines.unloadAll()
+    }
+
+    fun deleteCustom(id: String) {
+        if (settings.mainModelId == id) useAsMain(null)
+        models.deleteCustom(id); customModels = models.customModels(); modelInfo.remove(id)
+    }
+
+    /** Loads the main model (applying [id] as main first) and reports capabilities, or runs a speed test. */
+    fun probeModel(id: String, bench: Boolean) {
+        if (modelBusy != null) return
+        modelBusy = id
+        viewModelScope.launch {
+            val prevMain = settings.mainModelId
+            try {
+                if (prevMain != id) { models.overrides = mapOf(settings.primaryRole to id); engines.unloadAll() }
+                val caps = engines.probe(settings.primaryRole)
+                modelInfo[id] = caps.summary() + if (bench) "\n" + engines.benchmark(settings.primaryRole) else ""
+            } catch (e: Exception) { modelInfo[id] = "Failed: ${e.message}" }
+            finally { if (prevMain != id) { applyOverrides(); engines.unloadAll() }; modelBusy = null }
         }
     }
 

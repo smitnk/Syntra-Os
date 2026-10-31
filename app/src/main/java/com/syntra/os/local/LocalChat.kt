@@ -85,6 +85,8 @@ object LfmPrompt {
         } + "</function>\n</tool_call>"
     }
 
+    private val JSON_CALL = Regex("<tool_call>\\s*(\\{.*?\\})\\s*</tool_call>", RegexOption.DOT_MATCHES_ALL)
+
     private val NATIVE = Regex("<tool_call>\\s*<function=([\\w.-]+)>(.*?)</function>\\s*</tool_call>", RegexOption.DOT_MATCHES_ALL)
     private val PARAM = Regex("<parameter=([\\w.-]+)>\\n?(.*?)\\n?</parameter>", RegexOption.DOT_MATCHES_ALL)
     // Fallbacks seen from small models: <tool>{json}</tool>, and <tool>name</tool> followed by a JSON object.
@@ -125,6 +127,13 @@ object LfmPrompt {
             calls += ToolCall("local${calls.size}", m.groupValues[1], args.toString())
         }
         visible = NATIVE.replace(visible, "")
+        if (calls.isEmpty()) { // Qwen/Hermes/generic: <tool_call>{"name":…,"arguments":{…}}</tool_call>
+            JSON_CALL.findAll(text).forEach { m -> runCatching {
+                val o = json.parseToJsonElement(lenient(m.groupValues[1])).jsonObject
+                calls += ToolCall("local${calls.size}", o.str("name").orEmpty(), (o["arguments"] ?: o["parameters"] ?: JsonObject(emptyMap())).toString())
+            } }
+            visible = JSON_CALL.replace(visible, "")
+        }
         if (calls.isEmpty()) {
             TAG_JSON.findAll(text).forEach { m ->
                 runCatching {
@@ -159,7 +168,7 @@ object LfmPrompt {
 class LocalEngines(private val models: ModelManager, private val ctx: android.content.Context,
                    /** 0 = CPU only; >0 = layers offloaded to the GPU (Vulkan builds only). */
                    val gpuLayers: () -> Int = { 0 }) {
-    private class Loaded(val handle: Long, val media: Boolean, var lastUse: Long, val dir: java.io.File) { var bg: Long = 0; var cpKey = "" }
+    private class Loaded(val handle: Long, val media: Boolean, var lastUse: Long, val dir: java.io.File, val caps: Capabilities) { var bg: Long = 0; var cpKey = "" }
     private val loaded = java.util.concurrent.ConcurrentHashMap<ModelRole, Loaded>()
     private val locks = ModelRole.entries.associateWith { Mutex() }
     private val bgLocks = ModelRole.entries.associateWith { Mutex() }
@@ -196,7 +205,10 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
         // The low-memory killer handles real pressure; inference runs at background priority so System UI stays safe.
         val threads = if (Runtime.getRuntime().availableProcessors() >= 8) 4 else 2 // big cores only; leave the rest for the UI
         val h = withContext(pool) { background(); LlamaNative.load(files.model.path, files.mmproj?.path, 4096, threads, threads, gpuLayers()) }
-        Loaded(h, LlamaNative.hasMedia(h), System.currentTimeMillis(), files.model.parentFile!!).also { loaded[role] = it }
+        val info = LlamaNative.info(h)
+        val caps = Capabilities(arch = info[0], contextTrain = info[1].toIntOrNull() ?: 0, params = info[2].toLongOrNull() ?: 0,
+            description = info[3], hasTemplate = info[4].isNotBlank(), vision = LlamaNative.hasMedia(h), fileBytes = files.model.length())
+        Loaded(h, caps.vision, System.currentTimeMillis(), files.model.parentFile!!, caps).also { loaded[role] = it; lastCaps[role] = caps }
     }
 
     /** Inference threads run at background priority so taps, scrolling and System UI always win. */
@@ -216,7 +228,9 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
                 e.bg
             }
             val useMedia = media?.takeIf { e.media && !background }
-            val p = LfmPrompt.render(messages, tools, if (useMedia != null) LlamaNative.marker() else null)
+            val marker = if (useMedia != null) LlamaNative.marker() else null
+            // LFM models use their native tool format; every other model gets its own chat template + a generic tool protocol.
+            val p = if (e.caps.isLfm) LfmPrompt.render(messages, tools, marker) else GenericPrompt.render(handle, messages, tools, marker)
             // One saved checkpoint per distinct system prompt (each router tool set has its own).
             val key = Integer.toHexString(p.text.toByteArray().copyOf(p.stableBytes).contentHashCode())
             val cpFile = java.io.File(e.dir, "checkpoint-$key.bin")
@@ -248,6 +262,24 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
         } }
 
     fun unloadAll() { loaded.keys.toList().filter { !locks.getValue(it).isLocked }.forEach(::freeLoaded) }
+
+    /** Capabilities of models loaded this session (shown in the Models screen). */
+    val lastCaps = java.util.concurrent.ConcurrentHashMap<ModelRole, Capabilities>()
+
+    /** Load (if needed) and report capabilities — the "probe" for a newly installed model. */
+    suspend fun probe(role: ModelRole): Capabilities = locks.getValue(role).withLock { engine(role).caps }
+
+    /** Generates a fixed short reply and measures load + decode speed on this phone. */
+    suspend fun benchmark(role: ModelRole): String {
+        val t0 = System.currentTimeMillis()
+        probe(role)
+        val tLoad = System.currentTimeMillis() - t0
+        val t1 = System.currentTimeMillis()
+        val r = complete(role, listOf(com.syntra.os.core.message("user", "Count from 1 to 40, separated by spaces.")), null, null, null, maxTokens = 96)
+        val secs = ((System.currentTimeMillis() - t1) / 1000.0).coerceAtLeast(0.1)
+        // ~4 characters per token for English/digits; good enough to compare models on the same phone.
+        return "load ${tLoad} ms · ~${"%.1f".format(r.content.length / 4.0 / secs)} tokens/s (${"%.1f".format(secs)} s incl. prompt)"
+    }
 
     fun hasProjector(role: ModelRole) = models.installed(role)?.mmproj != null
 

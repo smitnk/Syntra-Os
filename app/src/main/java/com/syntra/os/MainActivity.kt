@@ -16,6 +16,10 @@ import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.TaskAlt
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -45,6 +49,7 @@ import com.syntra.os.voice.VoiceLoop
 import com.syntra.os.voice.VoiceState
 import java.io.File
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
     private lateinit var voice: VoiceLoop
@@ -92,40 +97,60 @@ class MainActivity : ComponentActivity() {
                     if (vm.settings.speakReplies) voice.speak(a)
                     vm.lastAnswer = null
                 }
+                // 4 primary destinations (M3: bar ≤5) + drawer for Models and Settings.
                 val tabs = listOf(
-                    "Syntra" to Icons.Outlined.AutoAwesome, "Memory" to Icons.Outlined.Hub,
-                    "Tasks" to Icons.Outlined.TaskAlt, "Terminal" to Icons.Outlined.Terminal, "Skills" to Icons.Outlined.Extension, "Setup" to Icons.Outlined.Settings,
+                    "Chat" to Icons.Outlined.AutoAwesome, "Tasks" to Icons.Outlined.TaskAlt,
+                    "Workspace" to Icons.Outlined.Terminal, "Extensions" to Icons.Outlined.Extension,
                 )
+                val drawer = androidx.compose.material3.rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
+                val scope = androidx.compose.runtime.rememberCoroutineScope()
+                var page by rememberSaveable { mutableIntStateOf(-1) } // -1 = tabs, 0 = Models, 1 = Settings
+                androidx.activity.compose.BackHandler(enabled = page >= 0) { page = -1 }
+                androidx.compose.material3.ModalNavigationDrawer(drawerState = drawer, drawerContent = {
+                    androidx.compose.material3.ModalDrawerSheet(drawerContainerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerLow) {
+                        Text("Syntra OS", style = androidx.compose.material3.MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.padding(start = 28.dp, top = 24.dp, bottom = 16.dp))
+                        listOf(Triple("Models", Icons.Outlined.Memory, 0), Triple("Settings", Icons.Outlined.Settings, 1)).forEach { (l, ic, i) ->
+                            androidx.compose.material3.NavigationDrawerItem(label = { Text(l) }, icon = { Icon(ic, null) }, selected = page == i,
+                                onClick = { page = i; scope.launch { drawer.close() } },
+                                modifier = Modifier.padding(horizontal = 12.dp))
+                        }
+                    }
+                }) {
                 Scaffold(
-                    containerColor = Bg,
+                    containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface,
+                    topBar = {
+                        if (page >= 0) androidx.compose.material3.TopAppBar(
+                            title = { Text(if (page == 0) "Models" else "Settings") },
+                            navigationIcon = { androidx.compose.material3.IconButton({ page = -1 }) {
+                                Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back") } })
+                    },
                     bottomBar = {
-                        NavigationBar(containerColor = Panel) {
+                        if (page < 0) NavigationBar(containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainer) {
                             tabs.forEachIndexed { i, (label, icon) ->
-                                NavigationBarItem(
-                                    selected = tab == i, onClick = { tab = i },
-                                    icon = { Icon(icon, contentDescription = label) }, label = { Text(label, fontSize = 11.sp, maxLines = 1) },
-                                    colors = NavigationBarItemDefaults.colors(indicatorColor = Raised, selectedIconColor = Clay,
-                                        selectedTextColor = Clay, unselectedIconColor = Dim, unselectedTextColor = Dim),
-                                )
+                                NavigationBarItem(selected = tab == i, onClick = { tab = i },
+                                    icon = { Icon(icon, contentDescription = null) }, label = { Text(label, maxLines = 1) })
                             }
                         }
                     },
                 ) { pad ->
                     val m = Modifier.padding(pad)
-                    when (tab) {
-                        0 -> AssistantScreen(vm, onMic = { voice.shutUp(); if (hasMic()) voice.wake() else micPermission.launch(Manifest.permission.RECORD_AUDIO) },
+                    when {
+                        page == 0 -> com.syntra.os.ui.ModelsScreen(vm, m)
+                        page == 1 -> SettingsScreen(vm, m)
+                        tab == 0 -> AssistantScreen(vm, onMic = { voice.shutUp(); if (hasMic()) voice.wake() else micPermission.launch(Manifest.permission.RECORD_AUDIO) },
                             onToggleVoice = { on ->
                                 vm.updateSettings(vm.settings.copy(alwaysListening = on, speakReplies = on))
                                 if (on) startVoice() else { voice.stop(); voice.shutUp() }
                             },
                             onAttach = { pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                            onMenu = { scope.launch { drawer.open() } },
                             modifier = m)
-                        1 -> MemoryScreen(vm, m)
-                        2 -> TasksScreen(vm, m)
-                        3 -> com.syntra.os.ui.LinuxScreen(vm, m)
-                        4 -> SkillsScreen(vm, m)
-                        else -> SettingsScreen(vm, m)
+                        tab == 1 -> TasksScreen(vm, m)
+                        tab == 2 -> com.syntra.os.ui.WorkspaceScreen(vm, m)
+                        else -> SkillsScreen(vm, m)
                     }
+                }
                 }
             }
         }

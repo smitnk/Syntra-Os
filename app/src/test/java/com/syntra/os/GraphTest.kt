@@ -162,3 +162,20 @@ class RouterTest {
         assertEquals("Bash", t!!.single().toString().let { Regex("\"name\":\"(\\w+)\"").find(it)!!.groupValues[1] })
     }
 }
+
+class GenericModelTest {
+    @Test fun parsesQwenStyleToolCall() {
+        val r = com.syntra.os.local.LfmPrompt.parse("<tool_call>\n{\"name\": \"web_search\", \"arguments\": {\"query\": \"news\"}}\n</tool_call>")
+        assertEquals("web_search", r.toolCalls.single().name)
+        assertEquals("""{"query":"news"}""", r.toolCalls.single().argsJson)
+        assertEquals("", r.content)
+    }
+
+    @Test fun flattensToolTurnsForAnyTemplate() {
+        val m = listOf(com.syntra.os.core.message("system", "S"), com.syntra.os.core.message("user", "q"),
+            com.syntra.os.core.toolResult("1", "a"), com.syntra.os.core.toolResult("2", "b"))
+        val (roles, contents) = com.syntra.os.local.GenericPrompt.flatten(m, null, null)
+        assertEquals(listOf("system", "user"), roles) // tool results merge into one user turn after the question
+        assertTrue("<tool_response>\na\n</tool_response>" in contents[1] && "b" in contents[1])
+    }
+}
