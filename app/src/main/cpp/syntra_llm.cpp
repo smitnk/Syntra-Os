@@ -325,3 +325,44 @@ Java_com_syntra_os_local_LlamaNative_generate(JNIEnv *env, jclass, jlong h, jstr
     env->SetByteArrayRegion(res, 0, (jsize) out.size(), reinterpret_cast<const jbyte *>(out.data()));
     return res;
 }
+
+// ---- Embeddings (RAG): a small separate model with its own context; text in, L2-normalised vector out. ----
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_syntra_os_local_LlamaNative_loadEmbedder(JNIEnv *env, jclass, jstring jpath, jint n_threads) {
+    std::call_once(g_backend, [] { setenv("GGML_VK_VISIBLE_DEVICES", "", 1); llama_backend_init(); });
+    auto *e = new Engine();
+    auto mp = llama_model_default_params();
+    mp.n_gpu_layers = 0;
+    e->model = llama_model_load_from_file(jstr(env, jpath).c_str(), mp);
+    if (!e->model) { delete e; throw_rt(env, "failed to load embedding model"); return 0; }
+    auto cp = llama_context_default_params();
+    cp.n_ctx = 512; cp.n_batch = 512; cp.n_ubatch = 512; // one chunk per call; chunks are kept under 512 tokens
+    cp.n_threads = n_threads; cp.n_threads_batch = n_threads;
+    cp.embeddings = true;
+    e->ctx = llama_init_from_model(e->model, cp);
+    if (!e->ctx) { llama_model_free(e->model); delete e; throw_rt(env, "failed to create embedding context"); return 0; }
+    e->vocab = llama_model_get_vocab(e->model);
+    return reinterpret_cast<jlong>(e);
+}
+
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_syntra_os_local_LlamaNative_embed(JNIEnv *env, jclass, jlong h, jstring jtext) {
+    auto *e = reinterpret_cast<Engine *>(h);
+    std::string text = jstr(env, jtext);
+    int n = -llama_tokenize(e->vocab, text.c_str(), (int) text.size(), nullptr, 0, true, true);
+    if (n <= 0) n = 1;
+    std::vector<llama_token> toks(n);
+    if (llama_tokenize(e->vocab, text.c_str(), (int) text.size(), toks.data(), n, true, true) < 0) { throw_rt(env, "tokenize failed"); return nullptr; }
+    if ((int) toks.size() > 512) toks.resize(512); // truncate over-long input rather than fail
+    llama_memory_clear(llama_get_memory(e->ctx), true);
+    if (llama_decode(e->ctx, llama_batch_get_one(toks.data(), (int) toks.size())) != 0) { throw_rt(env, "embed decode failed"); return nullptr; }
+    int d = llama_model_n_embd(e->model);
+    const float *v = llama_pooling_type(e->ctx) == LLAMA_POOLING_TYPE_NONE ? llama_get_embeddings_ith(e->ctx, -1) : llama_get_embeddings_seq(e->ctx, 0);
+    if (!v) { throw_rt(env, "no embeddings (model is not an embedding model?)"); return nullptr; }
+    double s = 0; for (int i = 0; i < d; i++) s += v[i] * v[i];
+    float inv = s > 0 ? (float) (1.0 / std::sqrt(s)) : 1.f;
+    std::vector<float> out(d); for (int i = 0; i < d; i++) out[i] = v[i] * inv;
+    jfloatArray arr = env->NewFloatArray(d);
+    env->SetFloatArrayRegion(arr, 0, d, out.data());
+    return arr;
+}

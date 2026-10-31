@@ -1,6 +1,7 @@
 package com.syntra.os
 
 import android.app.Application
+import kotlinx.coroutines.Dispatchers
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -166,6 +167,64 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---- Extensions (Phase 4) ----
+    // ---- Knowledge base (RAG) ----
+    var knowledgeDocs by mutableStateOf(emptyList<com.syntra.os.rag.Doc>()); private set
+    var knowledgeStatus by mutableStateOf(""); private set
+    var knowledgeBusy by mutableStateOf(false); private set
+    var knowledgeHits by mutableStateOf(emptyList<com.syntra.os.rag.Hit>()); private set
+    val embedderInstalled get() = models.embedder() != null
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            val st = com.syntra.os.rag.KnowledgeStore(java.io.File(app.filesDir, "knowledge"))
+            com.syntra.os.rag.Knowledge.store = st
+            models.embedder()?.let { com.syntra.os.rag.Knowledge.embedder = com.syntra.os.rag.LazyEmbedder(it, 4) }
+            knowledgeDocs = st.docs
+        }
+    }
+
+    private fun knowledgeJob(block: suspend () -> String) {
+        if (knowledgeBusy) return
+        knowledgeBusy = true
+        viewModelScope.launch(Dispatchers.IO) {
+            knowledgeStatus = runCatching { block() }.getOrElse { "Error: ${it.message}" }
+            knowledgeDocs = com.syntra.os.rag.Knowledge.store?.docs.orEmpty()
+            knowledgeBusy = false
+        }
+    }
+
+    fun importDocuments(uris: List<android.net.Uri>) = knowledgeJob {
+        val st = com.syntra.os.rag.Knowledge.store ?: error("knowledge base not ready")
+        val cr = getApplication<Application>().contentResolver
+        uris.joinToString("\n") { uri ->
+            val name = cr.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null } ?: uri.lastPathSegment ?: "document"
+            runCatching {
+                require(com.syntra.os.rag.Extract.supported(name)) { "unsupported type" }
+                knowledgeStatus = "Reading $name…"
+                val pages = cr.openInputStream(uri)!!.use { com.syntra.os.rag.Extract.pages(getApplication(), name, it) }
+                val d = st.add(name, uri.toString(), pages, com.syntra.os.rag.Knowledge.embedder) { i, n -> if (i % 10 == 0 || i == n) knowledgeStatus = "Embedding $name: $i/$n" }
+                "$name: ${d.chunks} passages" + if (d.pages > 0) " from ${d.pages} pages" else ""
+            }.getOrElse { "$name: ${it.message}" }
+        }
+    }
+
+    fun removeDocument(id: String) = knowledgeJob { com.syntra.os.rag.Knowledge.store?.remove(id); "Removed." }
+
+    fun searchKnowledge(q: String) = knowledgeJob {
+        val t = System.currentTimeMillis()
+        knowledgeHits = com.syntra.os.rag.Knowledge.search(q, 6)
+        "${knowledgeHits.size} passages in ${System.currentTimeMillis() - t} ms" + if (com.syntra.os.rag.Knowledge.embedder == null) " · keyword search" else " · hybrid search"
+    }
+
+    fun downloadEmbedder() = knowledgeJob {
+        val f = models.downloadEmbedder { knowledgeStatus = "Downloading $it" }
+        val e = com.syntra.os.rag.LazyEmbedder(f, 4)
+        com.syntra.os.rag.Knowledge.embedder = e
+        com.syntra.os.rag.Knowledge.store?.embedMissing(e) { knowledgeStatus = "Embedding $it" }
+        "Semantic search ready (${f.name})."
+    }
+
     val extManager = com.syntra.os.ext.ExtensionManager(app.filesDir) { settings.githubToken }
     var extensions by mutableStateOf(store.load("extensions", ListSerializer(com.syntra.os.ext.InstalledExt.serializer()), emptyList())); private set
     var plan by mutableStateOf<com.syntra.os.ext.InstallPlan?>(null); private set

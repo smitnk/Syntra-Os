@@ -15,6 +15,10 @@ object LlamaNative {
     @JvmStatic external fun applyTemplate(handle: Long, roles: Array<String>, contents: Array<String>): String?
     @JvmStatic external fun hasMedia(handle: Long): Boolean
     @JvmStatic external fun marker(): String
+    /** Embedding model (RAG). Freed with [free]. */
+    @JvmStatic external fun loadEmbedder(path: String, nThreads: Int): Long
+    /** L2-normalised embedding of [text] (truncated to 512 tokens). */
+    @JvmStatic external fun embed(handle: Long, text: String): FloatArray
     @JvmStatic external fun stop(handle: Long)
     @JvmStatic external fun free(handle: Long)
     @JvmStatic external fun generate(handle: Long, prompt: String, media: String?, maxTokens: Int, cb: PieceCallback?, stableChars: Int): ByteArray

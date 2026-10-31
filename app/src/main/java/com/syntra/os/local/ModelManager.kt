@@ -23,6 +23,9 @@ val CATALOG: Map<ModelRole, String> = mapOf(
     ModelRole.DECISION to "LiquidAI/d1-Omni-2B-GGUF",
 )
 
+/** Multilingual embedding model for the knowledge base (RAG). */
+const val EMBED_REPO = "ggml-org/embeddinggemma-300M-GGUF"
+
 class ModelFiles(val model: File, val mmproj: File?)
 
 /** Picks the phone-friendly quant from a repo's file list: Q4_0 first, then Q4_K_M. */
@@ -69,6 +72,17 @@ class ModelManager(private val root: File) {
         val files = d.listFiles().orEmpty().filter { it.name.endsWith(".gguf") }
         val main = files.firstOrNull { "mmproj" !in it.name.lowercase() } ?: return null
         return ModelFiles(main, files.firstOrNull { "mmproj" in it.name.lowercase() })
+    }
+
+    private val embedDir get() = File(root, "models/embed").apply { mkdirs() }
+    fun embedder(): File? = embedDir.listFiles().orEmpty().firstOrNull { it.name.endsWith(".gguf") }
+    fun deleteEmbedder() { embedDir.deleteRecursively() }
+    suspend fun downloadEmbedder(onProgress: (String) -> Unit): File {
+        val r = httpCall("https://huggingface.co/api/models/$EMBED_REPO")
+        if (r.code != 200) error("Hugging Face HTTP ${r.code} for $EMBED_REPO")
+        val names = (json.parseToJsonElement(r.body).jsonObject["siblings"] as? JsonArray).orEmpty().mapNotNull { it.jsonObject.str("rfilename") }
+        val (main, _) = pickFiles(names) ?: error("no GGUF in $EMBED_REPO")
+        return File(embedDir, main).also { fetch(EMBED_REPO, main, it, onProgress) }
     }
 
     fun delete(role: ModelRole) { dir(role).deleteRecursively() }

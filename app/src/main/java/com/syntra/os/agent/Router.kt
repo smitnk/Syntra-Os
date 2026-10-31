@@ -16,7 +16,7 @@ enum class Route(val tools: Set<String>) {
 }
 
 /** Always available: memory and learning are cheap and useful in every task. */
-val CORE_TOOLS = setOf("memory_search", "memory_remember", "learn")
+val CORE_TOOLS = setOf("memory_search", "memory_remember", "learn", "knowledge_search", "knowledge_add")
 
 object Router {
     private val keywords: Map<Route, List<String>> = mapOf(

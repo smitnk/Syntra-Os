@@ -52,12 +52,12 @@ fun riskOf(name: String): Risk = when {
     name in LINUX_TOOLS || name in com.syntra.os.ext.ExtRuntime.tools -> Risk.CODE
     name.startsWith("mcp__") || name == "mcp_call" || name == "delegate" -> Risk.EXTERNAL
     name == "http_request" || name == "github" -> Risk.NETWORK
-    name in setOf("file_write", "save_output", "memory_remember", "memory_link", "learn", "schedule_task", "cancel_schedule") -> Risk.LOCAL_WRITE
+    name in setOf("file_write", "save_output", "memory_remember", "memory_link", "knowledge_add", "learn", "schedule_task", "cancel_schedule") -> Risk.LOCAL_WRITE
     else -> Risk.READ
 }
 
 /** Read-only tools may be retried once after a transient failure (network blips, timeouts). */
-val RETRYABLE = setOf("web_search", "web_fetch", "scrape", "memory_search", "phone_screen", "list_apps", "read_notifications", "file_read", "file_list")
+val RETRYABLE = setOf("web_search", "web_fetch", "scrape", "memory_search", "knowledge_search", "phone_screen", "list_apps", "read_notifications", "file_read", "file_list")
 
 /** A tool's claim checked against reality. [artifact] is a real file the user can open. */
 data class Verification(val ok: Boolean, val note: String = "", val artifact: File? = null)

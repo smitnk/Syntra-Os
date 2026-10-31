@@ -46,6 +46,10 @@ fun isSensitive(name: String, args: JsonObject, askPhone: Boolean, askLinux: Boo
         ((name == "github" || name == "http_request") && (args.str("method") ?: "GET").uppercase() != "GET")
 
 val TOOLS: JsonArray = buildJsonArray {
+    add(tool("knowledge_search", "Search the user's documents (knowledge base). Returns numbered passages with source and page; cite them as [n].",
+        listOf("query"), mapOf("query" to "What to look for, in natural words")))
+    add(tool("knowledge_add", "Add a workspace file (pdf, docx, md, txt, html…) or a web page URL to the knowledge base.",
+        listOf("source"), mapOf("source" to "Workspace path or http(s) URL")))
     add(tool("memory_search", "Search the shared knowledge graph for entities, projects, people or story facts.",
         listOf("query"), mapOf("query" to "Words to look for")))
     add(tool("memory_remember", "Store or update an entity in the shared graph, optionally linking it to another entity.",

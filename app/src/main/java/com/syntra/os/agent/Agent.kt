@@ -118,7 +118,12 @@ class Agent(private val env: AgentEnv) {
             val g = env.graph()
             val mem = (g.search(goal).take(8) + g.nodes.takeLast(6)).distinctBy { it.id }
                 .joinToString("\n") { "- ${it.label} [${it.type}] ${it.notes.take(120)}" }
-            add(message("user", goal + team + if (mem.isNotBlank()) "\n\n[What you remember]\n$mem" else ""))
+            // RAG: top passages from the user's documents, numbered for citation. Only lexical/semantic hits get in.
+            val hits = runCatching { com.syntra.os.rag.Knowledge.relevant(goal, 4) }.getOrDefault(emptyList())
+            val docs = if (hits.isEmpty()) "" else "\n\n[From your documents — answer from these when relevant and cite as [n]; say so if they don't cover it]\n" +
+                com.syntra.os.rag.KnowledgeStore.contextBlock(hits)
+            if (hits.isNotEmpty()) env.log(Step(StepKind.THOUGHT, "Knowledge", "Using " + hits.joinToString("; ") { it.cite }))
+            add(message("user", goal + team + docs + if (mem.isNotBlank()) "\n\n[What you remember]\n$mem" else ""))
         }
         blackboard.appendLine("Goal: $goal")
         val cp = taskId?.let { TaskCheckpoint(it, goal, messages, 0, code, skill?.name, tools.mapNotNull { t -> (t as JsonObject)["function"]?.jsonObject?.str("name") }) }
@@ -311,6 +316,23 @@ class Agent(private val env: AgentEnv) {
         "web_search" -> webSearch(a.str("query").orEmpty())
         "file_list" -> safeFile(a.str("path") ?: ".").listFiles().orEmpty()
             .joinToString("\n") { (if (it.isDirectory) "dir  " else "file ") + it.name + " " + it.length() }.ifBlank { "(empty)" }
+        "knowledge_search" -> com.syntra.os.rag.Knowledge.search(a.str("query").orEmpty(), 5).let { h ->
+            if (h.isEmpty()) (if (com.syntra.os.rag.Knowledge.store?.docs.isNullOrEmpty()) "Knowledge base is empty." else "No matching passages.")
+            else com.syntra.os.rag.KnowledgeStore.contextBlock(h, 5000)
+        }
+        "knowledge_add" -> withContext(Dispatchers.IO) {
+            val src = a.str("source").orEmpty().trim()
+            val store = com.syntra.os.rag.Knowledge.store ?: error("knowledge base not ready")
+            val doc = if (src.startsWith("http://") || src.startsWith("https://")) {
+                val page = webFetch(src)
+                store.add(page.lineSequence().firstOrNull()?.take(80) ?: src, src, listOf(com.syntra.os.rag.PageText(0, page)), com.syntra.os.rag.Knowledge.embedder)
+            } else {
+                val f = safeFile(src)
+                require(com.syntra.os.rag.Extract.supported(f.name)) { "unsupported file type: ${f.name}" }
+                store.add(f.name, "workspace:$src", f.inputStream().use { com.syntra.os.rag.Extract.pages(env.context, f.name, it) }, com.syntra.os.rag.Knowledge.embedder)
+            }
+            "Added ${doc.title}: ${doc.chunks} passages" + if (doc.embedModel.isBlank()) " (keyword search only; download the embedding model for semantic search)" else ""
+        }
         "file_read" -> safeFile(a.str("path").orEmpty()).readText().take(6000)
         "file_write" -> safeFile(a.str("path").orEmpty()).let { it.parentFile?.mkdirs(); it.writeText(a.str("content").orEmpty()); "Wrote ${it.name}." }
         "read_notifications" -> com.syntra.os.device.SyntraNotifications.read()
