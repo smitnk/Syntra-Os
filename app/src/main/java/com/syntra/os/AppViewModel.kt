@@ -498,20 +498,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         else runCatching {
                             // Remote runs can't be approved on the phone, so sensitive tools are denied.
                             val e2 = AgentEnv(getApplication(), settings, skills, engines, { graph }, ::updateGraph, log = {}, approve = { false })
-                            val mention = com.syntra.os.agent.Dot.mention(text, dots)
-                if (text.startsWith("@") && mention == null) error("No Dot called ${text.substringBefore(' ')} — see Dots in the menu.")
-                if (mention != null) {
-                    val (dot, goal) = mention
-                    val agent = Agent(e)
-                    val answer = agent.run(goal.ifBlank { "Introduce yourself in one sentence." }, history, image, taskId = task.id, dot = dot)
-                    val rep = agent.lastReport
-                    val done = Step(StepKind.ANSWER, dot.name, answer, files = rep.artifacts.map { it.path }, verified = rep.verified, notes = rep.failures, taskId = task.id)
-                    chat = chat + done
-                    editTask(task.id) { it.copy(status = TaskStatus.DONE, steps = it.steps + done) }
-                    lastAnswer = answer
-                    return@launch
-                }
-                val slash = com.syntra.os.agent.AgenticOs.parseSlash(text, skills)
+                            val slash = com.syntra.os.agent.AgenticOs.parseSlash(text, skills)
                             Agent(e2).run(slash?.second?.ifBlank { text } ?: text, emptyList(), skill = slash?.first, code = text.startsWith("/code"))
                         }.getOrElse { "Error: ${it.message}" }
                         com.syntra.os.core.httpCall("https://api.telegram.org/bot$token/sendMessage", "POST",
