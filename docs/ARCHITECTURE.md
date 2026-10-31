@@ -244,4 +244,4 @@ Direction from UI/UX Pro Max: **"AI-Native UI"** — minimal chrome, streaming t
 | **4. Extensions** (2 wk) | manifest, importers (SKILL.md, Agency agents, pyproject), install plan UI, sandboxed tool runtime | install Ponytail, Agency Agents, Scrapling; their tools run |
 | **5. RAG** (2 wk) | extract/chunk/embed/hybrid search, Knowledge screen, context injection with citations | answer cites the right chunk from a 200-page PDF |
 | **6. Specialists** (1 wk) | lifecycle in section 7, metrics | vision subtask on text-only main, no OOM on 8 GB |
-| **7. Media/docs/3D** (ongoing) | PDF/DOCX generation, ffmpeg in Linux, 3D via Model-Forge workflow, MCP tools as extensions | each tool has a verifier and a real output |
+| **7. Media/docs** (ongoing) | PDF/DOCX generation, ffmpeg in Linux, MCP tools as extensions | each tool has a verifier and a real output |
