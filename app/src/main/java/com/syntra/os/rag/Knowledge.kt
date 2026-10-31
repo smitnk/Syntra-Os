@@ -73,7 +73,7 @@ object Chunker {
 
 object Tokens {
     private val STOP = setOf("the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "was", "were", "be", "it", "this",
-        "that", "with", "as", "at", "by", "from", "what", "which", "who", "how", "does", "do", "i", "you", "me", "my", "about", "can", "tell")
+        "that", "with", "as", "at", "by", "from", "what", "which", "who", "how", "does", "do", "i", "you", "me", "my", "about", "can", "tell", "hi", "hello", "hey", "thanks", "thank", "ok", "okay", "please", "yes", "no")
     private val word = Regex("[\\p{L}\\p{M}\\p{N}]+") // \p{M} keeps Devanagari vowel signs inside words
 
     fun of(s: String): List<String> = word.findAll(s.lowercase()).map { stem(it.value) }.filter { it.length > 1 && it !in STOP }.toList()
