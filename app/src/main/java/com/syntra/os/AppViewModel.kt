@@ -69,6 +69,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
     var pendingApproval by mutableStateOf<String?>(null); private set
     var busy by mutableStateOf(false); private set
+    /** Task being run right now (its steps feed the live run card). */
+    var currentTaskId by mutableStateOf<String?>(null); private set
+    /** Composer mode: "ask" (answer only), "agent" (tools as needed), "code" (coding harness). */
+    var mode by mutableStateOf("agent")
     var status by mutableStateOf(""); private set
     var streaming by mutableStateOf(""); private set
     var activeRoles by mutableStateOf(emptySet<ModelRole>()); private set
@@ -123,6 +127,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         attachment = null
         chat = chat + Step(StepKind.USER, if (image != null) "you · image" else "you", text)
         val task = TaskRun(id = System.currentTimeMillis().toString(), goal = text)
+        currentTaskId = task.id
         tasks = (listOf(task) + tasks).take(30)
         busy = true
         streaming = ""
@@ -130,14 +135,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val e = env { step -> status = "${step.who}: ${step.text}".take(90); editTask(task.id) { it.copy(steps = it.steps + step) } }
             try {
                 val slash = com.syntra.os.agent.AgenticOs.parseSlash(text, skills)
-                val code = text.startsWith("/code")
+                val code = text.startsWith("/code") || mode == "code"
                 val goal = if (slash != null && (slash.first != null || code)) slash.second.ifBlank { text } else text
                 if (slash != null && slash.first == null && !code) error("No skill called ${text.substringBefore(' ')} — see the Skills tab (or use /code).")
                 val agent = Agent(e)
-                val answer = agent.run(goal, history, image, skill = slash?.first, code = code, taskId = task.id)
+                val answer = agent.run(goal, history, image, skill = slash?.first, code = code, taskId = task.id, chatOnly = mode == "ask" && slash == null)
                 val rep = agent.lastReport
                 val done = Step(StepKind.ANSWER, settings.mainModelId ?: settings.slot(settings.primaryRole).model, answer,
-                    files = rep.artifacts.map { it.path }, verified = rep.verified, notes = rep.failures)
+                    files = rep.artifacts.map { it.path }, verified = rep.verified, notes = rep.failures, taskId = task.id)
                 chat = chat + done
                 editTask(task.id) { it.copy(status = if (rep.failures.lastOrNull() == "step limit reached") TaskStatus.INTERRUPTED else TaskStatus.DONE,
                     steps = it.steps + done.copy(who = "syntra")) }
@@ -169,7 +174,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun resumeTask(id: String) {
         if (busy) return
         val cp = checkpoints.load(id) ?: return
-        busy = true; streaming = ""
+        busy = true; streaming = ""; currentTaskId = id
         editTask(id) { it.copy(status = TaskStatus.RUNNING) }
         chat = chat + Step(StepKind.USER, "you · resume", cp.goal)
         job = viewModelScope.launch {
@@ -178,7 +183,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val agent = Agent(e)
                 val answer = agent.resume(cp)
                 val rep = agent.lastReport
-                val done = Step(StepKind.ANSWER, "syntra", answer, files = rep.artifacts.map { it.path }, verified = rep.verified, notes = rep.failures)
+                val done = Step(StepKind.ANSWER, "syntra", answer, files = rep.artifacts.map { it.path }, verified = rep.verified, notes = rep.failures, taskId = id)
                 chat = chat + done
                 editTask(id) { it.copy(status = TaskStatus.DONE, steps = it.steps + done) }
                 lastAnswer = answer

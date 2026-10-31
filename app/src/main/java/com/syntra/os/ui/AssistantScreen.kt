@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -38,6 +39,10 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.AddComment
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Verified
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Stop
@@ -233,44 +238,45 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean
                 items(vm.chat) { s ->
                     when (s.kind) {
                         StepKind.USER -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                            Text(s.text, Modifier.background(Raised, RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)).padding(14.dp, 10.dp),
-                                style = MaterialTheme.typography.bodyLarge)
+                            androidx.compose.material3.Surface(color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp), modifier = Modifier.fillMaxWidth(0.85f).wrapContentWidth(Alignment.End)) {
+                                Text(s.text, Modifier.padding(horizontal = 16.dp, vertical = 12.dp), style = MaterialTheme.typography.bodyLarge)
+                            }
                         }
-                        StepKind.ERROR -> Text(s.text, color = Danger, fontSize = 13.sp)
-                        else -> Column {
-                            Text(s.who.uppercase(), style = MaterialTheme.typography.labelSmall, color = Clay)
-                            Spacer(Modifier.height(4.dp))
-                            Text(s.text, style = MaterialTheme.typography.bodyLarge, color = Ink)
-                            if (s.files.isNotEmpty()) { Spacer(Modifier.height(6.dp)); FileChips(s.files) }
+                        StepKind.ERROR -> Row(verticalAlignment = Alignment.Top) {
+                            Icon(Icons.Outlined.ErrorOutline, null, Modifier.size(18.dp).padding(top = 2.dp), tint = MaterialTheme.colorScheme.error)
+                            Spacer(Modifier.width(8.dp))
+                            Text(s.text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                        }
+                        else -> Column(Modifier.fillMaxWidth()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(22.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape), contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(13.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Text(s.who, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                                if (s.verified == true && (s.files.isNotEmpty())) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Icon(Icons.Outlined.Verified, "Verified", Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text(s.text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                            if (s.files.isNotEmpty()) { Spacer(Modifier.height(8.dp)); FileChips(s.files) }
                             if (s.verified == false) Text("Not fully verified: " + s.notes.joinToString("; ").take(200),
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 4.dp))
+                            s.taskId?.let { id -> vm.tasks.firstOrNull { it.id == id }?.let { StepsDisclosure(it.steps) } }
                         }
                     }
                 }
                 if (vm.busy) item {
-                    Column {
-                        Text("THINKING", style = MaterialTheme.typography.labelSmall, color = Clay)
-                        if (vm.status.isNotBlank()) Text(vm.status, color = Dim, fontSize = 12.sp, fontFamily = FontFamily.Monospace, maxLines = 2)
-                        if (vm.streaming.isNotBlank()) Text(vm.streaming.replace(Regex("<tool(_call)?>.*?(</tool(_call)?>|$)", RegexOption.DOT_MATCHES_ALL), "").ifBlank { "…" },
-                            style = MaterialTheme.typography.bodyLarge, color = Ink.copy(alpha = 0.85f))
-                    }
+                    RunCard(vm.tasks.firstOrNull { it.id == vm.currentTaskId }?.steps.orEmpty(), vm.streaming, vm.pendingApproval,
+                        onAllow = { vm.answerApproval(true) }, onDeny = { vm.answerApproval(false) })
                 }
             }
         }
 
         if (vm.heard.isNotBlank() && !empty) Text("“${vm.heard}”", color = Dim, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 20.dp))
-
-        vm.pendingApproval?.let { action ->
-            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).background(Raised, RoundedCornerShape(16.dp))
-                .border(1.dp, Clay, RoundedCornerShape(16.dp)).padding(14.dp)) {
-                Text("Allow this action?", style = MaterialTheme.typography.titleMedium, color = Clay)
-                Text(action.take(400), fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Ink, modifier = Modifier.padding(vertical = 8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button({ vm.answerApproval(true) }, colors = ButtonDefaults.buttonColors(containerColor = Clay)) { Text("Allow") }
-                    OutlinedButton({ vm.answerApproval(false) }) { Text("Deny", color = Ink) }
-                }
-            }
-        }
 
         if (input.startsWith("/") && !input.contains(' ')) {
             val opts = listOf("code" to "coding harness") + vm.skills.map { com.syntra.os.agent.AgenticOs.slug(it.name) to it.description }
@@ -289,10 +295,18 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean
             }
         }
 
-        Row(Modifier.fillMaxWidth().padding(12.dp).background(Panel, RoundedCornerShape(28.dp)).border(1.dp, Line, RoundedCornerShape(28.dp))
+        // Ask = answer only; Agent = tools as needed; Code = coding harness in Linux.
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("ask" to "Ask", "agent" to "Agent", "code" to "Code").forEach { (k, l) ->
+                androidx.compose.material3.FilterChip(selected = vm.mode == k, onClick = { vm.mode = k }, label = { Text(l) },
+                    leadingIcon = if (vm.mode == k) ({ Icon(Icons.Outlined.Check, null, Modifier.size(16.dp)) }) else null)
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh, MaterialTheme.shapes.extraLarge)
             .padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onAttach) { Icon(Icons.Outlined.AddPhotoAlternate, "Attach image", tint = Dim) }
-            TextField(input, { input = it }, Modifier.weight(1f), placeholder = { Text("Message Syntra", color = Dim) }, maxLines = 4,
+            TextField(input, { input = it }, Modifier.weight(1f), placeholder = { Text(when (vm.mode) { "ask" -> "Ask anything"; "code" -> "Describe what to build"; else -> "Tell Syntra what to do" }, color = Dim) }, maxLines = 4,
                 colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
                     focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent))
             val btn = IconButtonDefaults.filledIconButtonColors(containerColor = Clay, contentColor = Bg)

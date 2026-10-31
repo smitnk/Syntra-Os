@@ -92,6 +92,8 @@ data class Step(
     /** null = not a task answer; false = some tool claim failed verification. */
     val verified: Boolean? = null,
     val notes: List<String> = emptyList(),
+    /** For answers: the task whose steps produced it (to show the timeline under the reply). */
+    val taskId: String? = null,
 )
 
 enum class TaskStatus { RUNNING, WAITING_APPROVAL, DONE, FAILED, CANCELLED, INTERRUPTED }

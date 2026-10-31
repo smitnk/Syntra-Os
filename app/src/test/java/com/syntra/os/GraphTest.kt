@@ -216,3 +216,18 @@ class HarnessTest {
         assertTrue(com.syntra.os.agent.estTokens(m) <= 1500)
     }
 }
+
+class RunCardTest {
+    @Test fun pairsCallsWithResults() {
+        val S = com.syntra.os.core.StepKind
+        val steps = listOf(com.syntra.os.core.Step(S.TOOL_CALL, "web_search", """{"query":"x"}"""),
+            com.syntra.os.core.Step(S.TOOL_CALL, "web_fetch", """{"url":"u"}"""),
+            com.syntra.os.core.Step(S.TOOL_RESULT, "web_fetch", "Error: 404"),
+            com.syntra.os.core.Step(S.TOOL_RESULT, "web_search", "1. a"),
+            com.syntra.os.core.Step(S.ANSWER, "syntra", "done"))
+        val items = com.syntra.os.ui.runItems(steps)
+        assertEquals(2, items.size)
+        assertEquals("1. a", items[0].result); assertTrue(!items[0].failed)
+        assertTrue(items[1].failed)
+    }
+}

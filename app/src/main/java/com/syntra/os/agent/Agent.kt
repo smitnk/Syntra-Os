@@ -95,7 +95,7 @@ class Agent(private val env: AgentEnv) {
      * after a crash, app kill or model swap.
      */
     suspend fun run(goal: String, history: List<JsonObject>, image: String? = null, skill: Skill? = null, code: Boolean = false,
-                    maxSteps: Int = if (code) 30 else 14, taskId: String? = null): String {
+                    maxSteps: Int = if (code) 30 else 14, taskId: String? = null, chatOnly: Boolean = false): String {
         media = image; this.skill = skill; this.code = code
         val lead = pickLead()
         // Route first: only the tool groups this request needs go into the prompt (much less to read on a phone).
@@ -106,6 +106,7 @@ class Agent(private val env: AgentEnv) {
             env.log(Step(StepKind.THOUGHT, "d1-Omni-2B", "Routed as ${routes.first().name.lowercase()}"))
         }
         if (routes.isEmpty()) routes = setOf(Route.WEB) // unknown requests: allow a quick web lookup, nothing more
+        if (chatOnly) routes = setOf(Route.CHAT) // Ask mode: answer from the model and memory only (fastest)
         val names = Router.toolNames(routes, code)
         val tools = JsonArray(TOOLS.filter { (it as JsonObject)["function"]?.jsonObject?.str("name") in names } +
             if (Route.AUTOMATION in routes) loadMcpTools() else emptyList())

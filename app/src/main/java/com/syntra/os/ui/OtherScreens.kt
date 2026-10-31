@@ -68,53 +68,6 @@ private fun Section(title: String, content: @Composable () -> Unit) =
     }
 
 @Composable
-fun TasksScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
-    var open by remember { mutableStateOf<String?>(null) }
-    val resumable = remember(vm.tasks, vm.busy) { vm.resumable() }
-    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Header("TASKS", "Every agent run and scheduled job, its tool calls, and which models took part.") }
-        if (vm.schedules.isNotEmpty()) item {
-            Section("Scheduled") {
-                vm.schedules.forEach { (id, goal) ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(goal, Modifier.weight(1f), fontSize = 14.sp)
-                        TextButton({ vm.cancelSchedule(id) }) { Text("Cancel", color = Danger) }
-                    }
-                }
-            }
-        }
-        if (vm.tasks.isEmpty()) item { Text("No tasks yet. Ask Syntra to do something — or \"remind me every morning…\".", color = Dim) }
-        items(vm.tasks, key = { it.id }) { t ->
-            val color = when (t.status) {
-                TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL -> Cyan; TaskStatus.DONE -> Ok
-                TaskStatus.FAILED -> Danger; TaskStatus.CANCELLED -> Dim; TaskStatus.INTERRUPTED -> Violet
-            }
-            Card(Modifier.fillMaxWidth().clickable { open = if (open == t.id) null else t.id }, colors = CardDefaults.cardColors(containerColor = Panel)) {
-                Column(Modifier.padding(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(10.dp).background(color, CircleShape)); Spacer(Modifier.size(8.dp))
-                        Text(t.goal, maxLines = 2, modifier = Modifier.weight(1f))
-                        Text(t.status.name.lowercase(), color = color, fontSize = 11.sp)
-                    }
-                    val models = t.steps.map { it.who }.filter { it.contains("LFM", true) || it.contains("Omni", true) || '/' in it || '-' in it }.distinct()
-                    Text("${t.steps.size} steps" + if (models.isNotEmpty()) " · ${models.joinToString()}" else "", color = Dim, fontSize = 11.sp)
-                    if (t.status == TaskStatus.INTERRUPTED && t.id in resumable) Row {
-                        TextButton({ vm.resumeTask(t.id) }, enabled = !vm.busy) { Text("Resume") }
-                        TextButton({ vm.discardCheckpoint(t.id) }) { Text("Discard", color = Dim) }
-                    }
-                    t.steps.lastOrNull { it.files.isNotEmpty() }?.let { FileChips(it.files) }
-                    if (open == t.id) t.steps.forEach { s ->
-                        Text("${s.kind.name.lowercase()} · ${s.who}", color = if (s.kind == StepKind.ERROR) Danger else Violet, fontSize = 11.sp,
-                            modifier = Modifier.padding(top = 8.dp))
-                        Text(s.text.take(800), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 fun SkillsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
     var url by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf("") }
