@@ -52,7 +52,7 @@ fun riskOf(name: String): Risk = when {
     name in LINUX_TOOLS || name in com.syntra.os.ext.ExtRuntime.tools -> Risk.CODE
     name.startsWith("mcp__") || name == "mcp_call" || name == "delegate" -> Risk.EXTERNAL
     name == "http_request" || name == "github" -> Risk.NETWORK
-    name in setOf("file_write", "save_output", "memory_remember", "memory_link", "knowledge_add", "learn", "schedule_task", "cancel_schedule") -> Risk.LOCAL_WRITE
+    name in setOf("file_write", "save_output", "memory_remember", "memory_link", "knowledge_add", "review_page", "learn", "schedule_task", "cancel_schedule") -> Risk.LOCAL_WRITE
     else -> Risk.READ
 }
 
@@ -88,6 +88,10 @@ object Verifier {
             "http_request", "github" -> {
                 val code = Regex("^HTTP (\\d+)").find(result)?.groupValues?.get(1)?.toIntOrNull()
                 if (code != null && code in 200..299) Verification(true) else Verification(false, "HTTP $code")
+            }
+            "review_page" -> if (!result.startsWith("Saved ")) Verification(true, "declined") else {
+                val f = File(workspace, result.removePrefix("Saved ").substringBefore(" (").trim())
+                if (f.isFile && f.length() > 0) Verification(true, f.name, f) else Verification(false, "page missing after save")
             }
             "web_search" -> if (result == "No results.") Verification(false, "no search results") else Verification(true)
             else -> {

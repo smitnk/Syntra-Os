@@ -46,6 +46,8 @@ fun isSensitive(name: String, args: JsonObject, askPhone: Boolean, askLinux: Boo
         ((name == "github" || name == "http_request") && (args.str("method") ?: "GET").uppercase() != "GET")
 
 val TOOLS: JsonArray = buildJsonArray {
+    add(tool("review_page", "Show a Markdown draft to the user for approval, then save it as a page in Spaces. Call once and wait for the result.",
+        listOf("title", "content"), mapOf("title" to "Page title", "content" to "Full Markdown draft")))
     add(tool("knowledge_search", "Search the user's documents (knowledge base). Returns numbered passages with source and page; cite them as [n].",
         listOf("query"), mapOf("query" to "What to look for, in natural words")))
     add(tool("knowledge_add", "Add a workspace file (pdf, docx, md, txt, html…) or a web page URL to the knowledge base.",

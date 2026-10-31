@@ -165,6 +165,15 @@ object LfmPrompt {
  * models generate truly in parallel while one model serves one request at a time.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
+/** What one on-device call cost: shown under specialist steps so swaps on 8 GB are visible. */
+data class CallMetric(val role: ModelRole, val loadMs: Long, val genMs: Long, val chars: Int, val freeMb: Long) {
+    fun describe() = buildString {
+        append(role.label); if (loadMs > 0) append(" loaded in ${"%.1f".format(loadMs / 1000.0)} s ·")
+        append(" answered in ${"%.1f".format(genMs / 1000.0)} s")
+        append(" · ${"%.1f".format(freeMb / 1024.0)} GB RAM free")
+    }
+}
+
 class LocalEngines(private val models: ModelManager, private val ctx: android.content.Context,
                    /** 0 = CPU only; >0 = layers offloaded to the GPU (Vulkan builds only). */
                    val gpuLayers: () -> Int = { 0 }) {
@@ -181,6 +190,8 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
     private val pool = Dispatchers.Default.limitedParallelism(2)
     /** Roles currently generating; the UI lights these up. */
     @Volatile var active: Set<ModelRole> = emptySet(); private set
+    @Volatile var lastMetric: CallMetric? = null; private set
+    private var lastLoadMs = 0L
 
     fun installedRoles() = ModelRole.entries.filter { models.installed(it) != null }
 
@@ -191,7 +202,8 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
     private fun freeLoaded(r: ModelRole) { loaded.remove(r)?.let { l -> if (l.bg != 0L) LlamaNative.free(l.bg); LlamaNative.free(l.handle) } }
 
     private suspend fun engine(role: ModelRole): Loaded = loadLock.withLock {
-        loaded[role]?.let { it.lastUse = System.currentTimeMillis(); return it }
+        loaded[role]?.let { it.lastUse = System.currentTimeMillis(); lastLoadMs = 0; return it }
+        val t0 = System.currentTimeMillis()
         val files = models.installed(role) ?: error("${role.label} model not downloaded — open Setup → On-device models")
         val need = files.model.length() + (files.mmproj?.length() ?: 0) + 600_000_000L // weights + KV/compute buffers
         // Phones under ~11 GB keep one model in RAM; bigger phones two.
@@ -201,6 +213,8 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
                 .minByOrNull { it.value.lastUse }?.key ?: break
             freeLoaded(victim)
         }
+        // The RAG embedder (~330 MB) is the cheapest thing to drop before a chat model loads on a tight phone.
+        if (memInfo().availMem - need < 1_500_000_000L) com.syntra.os.rag.Knowledge.releaseEmbedder()
         // No hard refusal: Android's "available" excludes cached apps it will reclaim on demand (v0.7 refused wrongly).
         // The low-memory killer handles real pressure; inference runs at background priority so System UI stays safe.
         val threads = if (Runtime.getRuntime().availableProcessors() >= 8) 4 else 2 // big cores only; leave the rest for the UI
@@ -208,6 +222,7 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
         val info = LlamaNative.info(h)
         val caps = Capabilities(arch = info[0], contextTrain = info[1].toIntOrNull() ?: 0, params = info[2].toLongOrNull() ?: 0,
             description = info[3], hasTemplate = info[4].isNotBlank(), vision = LlamaNative.hasMedia(h), fileBytes = files.model.length())
+        lastLoadMs = System.currentTimeMillis() - t0
         Loaded(h, caps.vision, System.currentTimeMillis(), files.model.parentFile!!, caps).also { loaded[role] = it; lastCaps[role] = caps }
     }
 
@@ -257,6 +272,7 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
                     if (LlamaNative.saveCheckpoint(handle, cpFile.path)) // keep the 6 most recent tool-set checkpoints
                         e.dir.listFiles { f -> f.name.startsWith("checkpoint") }.orEmpty().sortedByDescending { it.lastModified() }.drop(6).forEach { it.delete() }
                 }
+                lastMetric = CallMetric(role, lastLoadMs, System.currentTimeMillis() - started, bytes.size, memInfo().availMem / 1_048_576)
                 LfmPrompt.parse(String(bytes, Charsets.UTF_8))
             } finally { active = active - role }
         } }

@@ -117,7 +117,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun env(log: (Step) -> Unit = {}) = AgentEnv(getApplication(), settings, skills, engines, { graph }, ::updateGraph,
-        log = log, approve = ::askApproval, onStream = { streaming = it })
+        log = log, approve = ::askApproval, onStream = { streaming = it }, dotNow = { id -> dots.firstOrNull { it.id == id } })
 
     fun send(text: String) {
         if (text.isBlank() || busy) return
@@ -135,6 +135,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         job = viewModelScope.launch {
             val e = env { step -> status = "${step.who}: ${step.text}".take(90); editTask(task.id) { it.copy(steps = it.steps + step) } }
             try {
+                val mention = com.syntra.os.agent.Dot.mention(text, dots)
+                if (text.startsWith("@") && mention == null) error("No Dot called ${text.substringBefore(' ')} — see Dots in the menu.")
+                if (mention != null) {
+                    val (dot, goal) = mention
+                    val agent = Agent(e)
+                    val answer = agent.run(goal.ifBlank { "Introduce yourself in one sentence." }, history, image, taskId = task.id, dot = dot)
+                    val rep = agent.lastReport
+                    val done = Step(StepKind.ANSWER, dot.name, answer, files = rep.artifacts.map { it.path }, verified = rep.verified, notes = rep.failures, taskId = task.id)
+                    chat = chat + done
+                    editTask(task.id) { it.copy(status = TaskStatus.DONE, steps = it.steps + done) }
+                    lastAnswer = answer
+                    return@launch
+                }
                 val slash = com.syntra.os.agent.AgenticOs.parseSlash(text, skills)
                 val code = text.startsWith("/code") || mode == "code"
                 val goal = if (slash != null && (slash.first != null || code)) slash.second.ifBlank { text } else text
@@ -164,6 +177,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 store.save("tasks", ListSerializer(TaskRun.serializer()), tasks)
             }
         }
+    }
+
+    // ---- Dots: named specialist agents (ported from OpenDots) ----
+    var dots by mutableStateOf(store.load("dots", ListSerializer(com.syntra.os.agent.Dot.serializer()), com.syntra.os.agent.Dot.PRESETS)); private set
+
+    fun saveDot(d: com.syntra.os.agent.Dot) {
+        require(d.name.isNotBlank()) { "name required" }
+        dots = dots.filter { it.id != d.id } + d
+        store.save("dots", ListSerializer(com.syntra.os.agent.Dot.serializer()), dots)
+    }
+
+    fun deleteDot(id: String) {
+        dots = dots.filter { it.id != id }
+        store.save("dots", ListSerializer(com.syntra.os.agent.Dot.serializer()), dots)
     }
 
     // ---- Extensions (Phase 4) ----
@@ -471,7 +498,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         else runCatching {
                             // Remote runs can't be approved on the phone, so sensitive tools are denied.
                             val e2 = AgentEnv(getApplication(), settings, skills, engines, { graph }, ::updateGraph, log = {}, approve = { false })
-                            val slash = com.syntra.os.agent.AgenticOs.parseSlash(text, skills)
+                            val mention = com.syntra.os.agent.Dot.mention(text, dots)
+                if (text.startsWith("@") && mention == null) error("No Dot called ${text.substringBefore(' ')} — see Dots in the menu.")
+                if (mention != null) {
+                    val (dot, goal) = mention
+                    val agent = Agent(e)
+                    val answer = agent.run(goal.ifBlank { "Introduce yourself in one sentence." }, history, image, taskId = task.id, dot = dot)
+                    val rep = agent.lastReport
+                    val done = Step(StepKind.ANSWER, dot.name, answer, files = rep.artifacts.map { it.path }, verified = rep.verified, notes = rep.failures, taskId = task.id)
+                    chat = chat + done
+                    editTask(task.id) { it.copy(status = TaskStatus.DONE, steps = it.steps + done) }
+                    lastAnswer = answer
+                    return@launch
+                }
+                val slash = com.syntra.os.agent.AgenticOs.parseSlash(text, skills)
                             Agent(e2).run(slash?.second?.ifBlank { text } ?: text, emptyList(), skill = slash?.first, code = text.startsWith("/code"))
                         }.getOrElse { "Error: ${it.message}" }
                         com.syntra.os.core.httpCall("https://api.telegram.org/bot$token/sendMessage", "POST",

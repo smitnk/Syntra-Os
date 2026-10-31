@@ -46,6 +46,8 @@ class AgentEnv(
     val log: (Step) -> Unit,
     val approve: suspend (String) -> Boolean,
     val onStream: (String) -> Unit = {},
+    /** Current version of the Dot running this task (null = plain Syntra). Re-read before every tool call. */
+    val dotNow: (String) -> Dot? = { null },
 )
 
 /** Calls the model bound to a role: on-device llama.cpp or any OpenAI-compatible provider. */
@@ -67,7 +69,10 @@ class Agent(private val env: AgentEnv) {
     private val mcp = settings.mcpServers.associate { it.name to McpClient(it) }
     private val blackboard = StringBuilder()
     private var media: String? = null
-    private val workspace = File(env.context.filesDir, "workspace").apply { mkdirs() }
+    private val workspaceRoot = File(env.context.filesDir, "workspace").apply { mkdirs() }
+    private var dot: Dot? = null
+    /** A Dot works in its own folder (its "computer"); pages go to the shared spaces folder. */
+    private val workspace get() = dot?.let { File(workspaceRoot, "dots/${it.slug}").apply { mkdirs() } } ?: workspaceRoot
     private val os = AgenticOs(env.context)
     private var skill: Skill? = null
     private var code = false
@@ -95,9 +100,9 @@ class Agent(private val env: AgentEnv) {
      * after a crash, app kill or model swap.
      */
     suspend fun run(goal: String, history: List<JsonObject>, image: String? = null, skill: Skill? = null, code: Boolean = false,
-                    maxSteps: Int = if (code) 30 else 14, taskId: String? = null, chatOnly: Boolean = false): String {
-        media = image; this.skill = skill; this.code = code
-        val lead = pickLead()
+                    maxSteps: Int = if (code) 30 else 14, taskId: String? = null, chatOnly: Boolean = false, dot: Dot? = null): String {
+        media = image; this.skill = skill; this.code = code; this.dot = dot
+        val lead = dot?.role?.takeIf { available(it) } ?: pickLead()
         // Route first: only the tool groups this request needs go into the prompt (much less to read on a phone).
         var routes = Router.keywordRoutes(goal)
         if (routes.isEmpty() && settings.useD1Router && env.engines.installedRoles().contains(ModelRole.DECISION)) runCatching {
@@ -107,10 +112,13 @@ class Agent(private val env: AgentEnv) {
         }
         if (routes.isEmpty()) routes = setOf(Route.WEB) // unknown requests: allow a quick web lookup, nothing more
         if (chatOnly) routes = setOf(Route.CHAT) // Ask mode: answer from the model and memory only (fastest)
-        val names = Router.toolNames(routes, code)
+        if (dot != null) routes = dot.allowedRoutes() + Route.CHAT // a Dot gets exactly its permitted groups
+        val names = Router.toolNames(routes, code && (dot == null || Route.CODE in dot.allowedRoutes())).filter { dot?.allows(it) ?: true } + "review_page"
+        
         val tools = JsonArray(TOOLS.filter { (it as JsonObject)["function"]?.jsonObject?.str("name") in names } +
             (if (Route.AUTOMATION in routes) loadMcpTools() else emptyList()) +
-            (if (chatOnly) emptyList() else com.syntra.os.ext.ExtRuntime.definitions()))
+            (if (chatOnly) emptyList() else com.syntra.os.ext.ExtRuntime.definitions().filter { t ->
+                dot?.allows((t as JsonObject)["function"]?.jsonObject?.str("name").orEmpty()) ?: true }))
         val team = teamBriefing(goal, image)
         val messages = mutableListOf(message("system", systemPrompt())).apply {
             addAll(history.takeLast(10))
@@ -200,7 +208,8 @@ class Agent(private val env: AgentEnv) {
             async { "\n\n[${r.label} teammate sees the image]\n" + runCatching {
                 env.log(Step(StepKind.THOUGHT, settings.slot(r).model, "Looking at the image…"))
                 callModel(env, r, listOf(message("user", "Describe this image in detail for a teammate who cannot see it. Include any text.")), null, image, null).content
-            }.getOrElse { "(vision failed: ${it.message})" } }
+            }.also { env.engines.lastMetric?.let { m -> env.log(Step(StepKind.THOUGHT, settings.slot(r).model, m.describe())) } }
+                .getOrElse { "(vision failed: ${it.message})" } }
         } else null
         vision?.await().orEmpty()
     }
@@ -241,6 +250,8 @@ class Agent(private val env: AgentEnv) {
     }
 
     private suspend fun safeExec(c: ToolCall, a: JsonObject): String {
+        // OpenDots-style live permission check: a Dot edited or deleted mid-run stops before its next action.
+        dot?.let { d -> val now = env.dotNow(d.id); check(now != null && now.allows(c.name)) { "${d.name}'s permissions changed — run stopped before ${c.name}." } }
         env.log(Step(StepKind.TOOL_CALL, c.name, a.toString().take(300)))
         suspend fun attempt() = try { execute(c.name, a) } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
@@ -249,7 +260,7 @@ class Agent(private val env: AgentEnv) {
         var r = attempt()
         if (r.startsWith("Error:") && c.name in RETRYABLE) { kotlinx.coroutines.delay(1500); r = attempt() }
         // Verify the claim against reality; failures are fed back so the model can fix them.
-        val v = Verifier.check(c.name, a, r, workspace, os.root)
+        val v = Verifier.check(c.name, a, r, if (c.name == "review_page") workspaceRoot else workspace, os.root)
         synchronized(failures) {
             v.artifact?.let { artifacts += it }
             if (!v.ok && r != "User denied this action.") { failures += "${c.name}: ${v.note}"; r += "\n[verification failed: ${v.note}]" }
@@ -270,6 +281,8 @@ class Agent(private val env: AgentEnv) {
         append(os.context())
         val skills = skill?.let { listOf(it) } ?: env.skills.filter { it.enabled }
         skills.forEach { appendLine("\n## Skill: ${it.name}\n${it.prompt.take(1500)}") }
+        dot?.let { appendLine("\n## You are the Dot \"${it.name}\"\n${it.instructions.take(1500)}\nYour files live in your own folder; paths are relative to it.") }
+        appendLine("To save a document the user will keep, call review_page with the full Markdown draft; the user approves before it is saved.")
     }
 
     private suspend fun execute(name: String, a: JsonObject): String = when (name) {
@@ -333,6 +346,7 @@ class Agent(private val env: AgentEnv) {
             }
             "Added ${doc.title}: ${doc.chunks} passages" + if (doc.embedModel.isBlank()) " (keyword search only; download the embedding model for semantic search)" else ""
         }
+        "review_page" -> reviewPage(a.str("title").orEmpty(), a.str("content").orEmpty())
         "file_read" -> safeFile(a.str("path").orEmpty()).readText().take(6000)
         "file_write" -> safeFile(a.str("path").orEmpty()).let { it.parentFile?.mkdirs(); it.writeText(a.str("content").orEmpty()); "Wrote ${it.name}." }
         "read_notifications" -> com.syntra.os.device.SyntraNotifications.read()
@@ -392,6 +406,17 @@ class Agent(private val env: AgentEnv) {
     }
 
     /** Workspace paths can't escape the sandbox folder. */
+    /** OpenDots "review before saving": the draft is shown on an approval card; only approval writes it. Same draft → same page. */
+    private suspend fun reviewPage(title: String, content: String): String {
+        require(title.isNotBlank() && content.isNotBlank()) { "title and content are required" }
+        val slug = title.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "-").trim('-').take(60).ifBlank { "page" }
+        val f = File(workspaceRoot, "spaces/$slug.md")
+        if (f.isFile && f.readText() == content) return "Saved spaces/${f.name} (already saved)"
+        if (!env.approve("[Review page] $title\n\n${content.take(1500)}${if (content.length > 1500) "…" else ""}")) return "User declined the draft. Ask what to change."
+        f.parentFile?.mkdirs(); f.writeText(content)
+        return "Saved spaces/${f.name}"
+    }
+
     private fun safeFile(path: String): File {
         val f = File(workspace, path).canonicalFile
         require(f.path.startsWith(workspace.canonicalPath)) { "path outside workspace" }
@@ -469,7 +494,9 @@ class Agent(private val env: AgentEnv) {
             "\n\nShared memory:\n${env.graph().describe(20)}\n\nTeam blackboard:\n$board"
         env.log(Step(StepKind.THOUGHT, slot.model, "Consulted: $question"))
         val needsMedia = role == ModelRole.VISION || role == ModelRole.OMNI
-        return callModel(env, role, listOf(message("system", sys), message("user", question)), null, media?.takeIf { needsMedia }, null).content
+        val r = callModel(env, role, listOf(message("system", sys), message("user", question)), null, media?.takeIf { needsMedia }, null).content
+        env.engines.lastMetric?.let { env.log(Step(StepKind.THOUGHT, slot.model, it.describe())) }
+        return r
     }
 }
 

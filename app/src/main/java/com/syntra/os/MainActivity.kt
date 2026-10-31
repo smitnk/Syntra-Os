@@ -18,6 +18,7 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.TaskAlt
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.MenuBook
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -111,7 +112,7 @@ class MainActivity : ComponentActivity() {
                     androidx.compose.material3.ModalDrawerSheet(drawerContainerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerLow) {
                         Text("Syntra OS", style = androidx.compose.material3.MaterialTheme.typography.titleLarge,
                             modifier = Modifier.padding(start = 28.dp, top = 24.dp, bottom = 16.dp))
-                        listOf(Triple("Knowledge", Icons.Outlined.MenuBook, 2), Triple("Models", Icons.Outlined.Memory, 0), Triple("Settings", Icons.Outlined.Settings, 1)).forEach { (l, ic, i) ->
+                        listOf(Triple("Dots", Icons.Outlined.Groups, 3), Triple("Knowledge", Icons.Outlined.MenuBook, 2), Triple("Models", Icons.Outlined.Memory, 0), Triple("Settings", Icons.Outlined.Settings, 1)).forEach { (l, ic, i) ->
                             androidx.compose.material3.NavigationDrawerItem(label = { Text(l) }, icon = { Icon(ic, null) }, selected = page == i,
                                 onClick = { page = i; scope.launch { drawer.close() } },
                                 modifier = Modifier.padding(horizontal = 12.dp))
@@ -122,7 +123,7 @@ class MainActivity : ComponentActivity() {
                     containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surface,
                     topBar = {
                         if (page >= 0) androidx.compose.material3.TopAppBar(
-                            title = { Text(when (page) { 0 -> "Models"; 2 -> "Knowledge"; else -> "Settings" }) },
+                            title = { Text(when (page) { 0 -> "Models"; 2 -> "Knowledge"; 3 -> "Dots"; else -> "Settings" }) },
                             navigationIcon = { androidx.compose.material3.IconButton({ page = -1 }) {
                                 Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back") } })
                     },
@@ -140,6 +141,7 @@ class MainActivity : ComponentActivity() {
                         page == 0 -> com.syntra.os.ui.ModelsScreen(vm, m)
                         page == 1 -> SettingsScreen(vm, m)
                         page == 2 -> com.syntra.os.ui.KnowledgeScreen(vm, m)
+                        page == 3 -> com.syntra.os.ui.DotsScreen(vm, m)
                         tab == 0 -> AssistantScreen(vm, onMic = { voice.shutUp(); if (hasMic()) voice.wake() else micPermission.launch(Manifest.permission.RECORD_AUDIO) },
                             onToggleVoice = { on ->
                                 vm.updateSettings(vm.settings.copy(alwaysListening = on, speakReplies = on))

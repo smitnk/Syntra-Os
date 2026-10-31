@@ -58,16 +58,19 @@ class LlamaEmbedder(file: File, threads: Int) : Embedder, AutoCloseable {
 /** Loads the embedding model on first use, so idle app RAM stays low. */
 class LazyEmbedder(private val file: File, private val threads: Int) : Embedder {
     override val model: String = file.name
-    private val e by lazy { LlamaEmbedder(file, threads) }
-    override fun query(text: String) = e.query(text)
-    override fun passage(title: String, text: String) = e.passage(title, text)
+    private var e: LlamaEmbedder? = null
+    @Synchronized private fun get() = e ?: LlamaEmbedder(file, threads).also { e = it }
+    override fun query(text: String) = get().query(text)
+    override fun passage(title: String, text: String) = get().passage(title, text)
+    /** Frees the model; the next search reloads it (mmap, ~1 s). */
+    @Synchronized fun release() { e?.close(); e = null }
 }
 
 /** App-wide knowledge base (like ExtRuntime): the store plus the optional embedder. */
 object Knowledge {
     @Volatile var store: KnowledgeStore? = null
     @Volatile var embedder: Embedder? = null
-    // shortcut: embedder stays loaded (~330 MB) once used; free it on memory pressure if that bites on 8 GB phones.
+    fun releaseEmbedder() { (embedder as? LazyEmbedder)?.release() }
 
     fun search(query: String, k: Int = 5) = store?.search(query, k, embedder).orEmpty()
 
