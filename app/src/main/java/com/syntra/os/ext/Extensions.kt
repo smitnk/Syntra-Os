@@ -225,7 +225,7 @@ class ExtensionManager(private val root: File, private val token: () -> String) 
                 val m = json.decodeFromString(Manifest.serializer(), own)
                 Triple(m, (m.skills.map { it.file } + m.agents.map { it.file } + m.tools.map { it.entry }).filter { it.isNotBlank() }, false)
             }
-            Registry.manifestFor(repo) != null -> Triple(Registry.manifestFor(repo)!!, emptyList(), true).also { warnings += "Manifest supplied by Syntra's registry." }
+            Registry.manifestFor(repo) != null -> Triple(Registry.manifestFor(repo)!!, emptyList<String>(), true).also { warnings += "Manifest supplied by Syntra's registry." }
             else -> Importer.generate(repo, tree) { p -> raw(repo, sha, p) }.let { (m, f) -> Triple(m, f, true) }
         }
         if (manifest.skills.isEmpty() && manifest.agents.isEmpty() && manifest.tools.isEmpty() && manifest.dependencies.pip.isEmpty())
