@@ -241,6 +241,9 @@ fun AssistantScreen(vm: AppViewModel, onMic: () -> Unit, onToggleVoice: (Boolean
                             Text(s.who.uppercase(), style = MaterialTheme.typography.labelSmall, color = Clay)
                             Spacer(Modifier.height(4.dp))
                             Text(s.text, style = MaterialTheme.typography.bodyLarge, color = Ink)
+                            if (s.files.isNotEmpty()) { Spacer(Modifier.height(6.dp)); FileChips(s.files) }
+                            if (s.verified == false) Text("Not fully verified: " + s.notes.joinToString("; ").take(200),
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 4.dp))
                         }
                     }
                 }

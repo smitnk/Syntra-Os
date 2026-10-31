@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
@@ -69,6 +70,7 @@ private fun Section(title: String, content: @Composable () -> Unit) =
 @Composable
 fun TasksScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
     var open by remember { mutableStateOf<String?>(null) }
+    val resumable = remember(vm.tasks, vm.busy) { vm.resumable() }
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Header("TASKS", "Every agent run and scheduled job, its tool calls, and which models took part.") }
         if (vm.schedules.isNotEmpty()) item {
@@ -85,7 +87,7 @@ fun TasksScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         items(vm.tasks, key = { it.id }) { t ->
             val color = when (t.status) {
                 TaskStatus.RUNNING, TaskStatus.WAITING_APPROVAL -> Cyan; TaskStatus.DONE -> Ok
-                TaskStatus.FAILED -> Danger; TaskStatus.CANCELLED -> Dim
+                TaskStatus.FAILED -> Danger; TaskStatus.CANCELLED -> Dim; TaskStatus.INTERRUPTED -> Violet
             }
             Card(Modifier.fillMaxWidth().clickable { open = if (open == t.id) null else t.id }, colors = CardDefaults.cardColors(containerColor = Panel)) {
                 Column(Modifier.padding(14.dp)) {
@@ -96,6 +98,11 @@ fun TasksScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     }
                     val models = t.steps.map { it.who }.filter { it.contains("LFM", true) || it.contains("Omni", true) || '/' in it || '-' in it }.distinct()
                     Text("${t.steps.size} steps" + if (models.isNotEmpty()) " · ${models.joinToString()}" else "", color = Dim, fontSize = 11.sp)
+                    if (t.status == TaskStatus.INTERRUPTED && t.id in resumable) Row {
+                        TextButton({ vm.resumeTask(t.id) }, enabled = !vm.busy) { Text("Resume") }
+                        TextButton({ vm.discardCheckpoint(t.id) }) { Text("Discard", color = Dim) }
+                    }
+                    t.steps.lastOrNull { it.files.isNotEmpty() }?.let { FileChips(it.files) }
                     if (open == t.id) t.steps.forEach { s ->
                         Text("${s.kind.name.lowercase()} · ${s.who}", color = if (s.kind == StepKind.ERROR) Danger else Violet, fontSize = 11.sp,
                             modifier = Modifier.padding(top = 8.dp))
@@ -381,6 +388,28 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     Switch(s.speakReplies, { vm.updateSettings(s.copy(speakReplies = it)) })
                 }
             }
+        }
+    }
+}
+
+/** Opens a produced file with whatever app handles it (via FileProvider). */
+fun openFile(ctx: android.content.Context, path: String) {
+    val f = java.io.File(path)
+    val uri = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", f)
+    val type = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "text/plain"
+    val i = android.content.Intent(android.content.Intent.ACTION_VIEW).setDataAndType(uri, type)
+        .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { ctx.startActivity(android.content.Intent.createChooser(i, f.name).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+fun FileChips(files: List<String>) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        files.filter { java.io.File(it).exists() }.forEach { p ->
+            androidx.compose.material3.AssistChip(onClick = { openFile(ctx, p) }, label = { Text(java.io.File(p).name, maxLines = 1) },
+                leadingIcon = { Icon(Icons.Outlined.Description, null) })
         }
     }
 }

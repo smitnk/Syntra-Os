@@ -84,12 +84,20 @@ class Agent(private val env: AgentEnv) {
         return if (p.local) env.engines.installedRoles().contains(role) else p.apiKey.isNotBlank() || "127.0.0.1" in p.baseUrl
     }
 
+    /** Outcome of the last [run]: whether every tool claim checked out, and the real files produced. */
+    var lastReport = RunReport(true, emptyList(), emptyList()); private set
+    private val checkpoints = CheckpointStore(File(env.context.filesDir, "tasks"))
+    private val artifacts = mutableListOf<File>()
+    private val failures = mutableListOf<String>()
+
+    /**
+     * Runs a task. With [taskId] the run is checkpointed after every step and can be continued with [resume]
+     * after a crash, app kill or model swap.
+     */
     suspend fun run(goal: String, history: List<JsonObject>, image: String? = null, skill: Skill? = null, code: Boolean = false,
-                    maxSteps: Int = if (code) 30 else 14): String {
+                    maxSteps: Int = if (code) 30 else 14, taskId: String? = null): String {
         media = image; this.skill = skill; this.code = code
-        // Lead: the chosen model if it's ready, otherwise the best downloaded chat model.
-        val lead = settings.primaryRole.takeIf { available(it) } ?: listOf(ModelRole.OMNI, ModelRole.TEXT, ModelRole.VISION).firstOrNull { available(it) }
-            ?: error("No chat model downloaded yet — open Setup → On-device models and download LFM3-Omni-2B.")
+        val lead = pickLead()
         // Route first: only the tool groups this request needs go into the prompt (much less to read on a phone).
         var routes = Router.keywordRoutes(goal)
         if (routes.isEmpty() && settings.useD1Router && env.engines.installedRoles().contains(ModelRole.DECISION)) runCatching {
@@ -111,20 +119,66 @@ class Agent(private val env: AgentEnv) {
             add(message("user", goal + team + if (mem.isNotBlank()) "\n\n[What you remember]\n$mem" else ""))
         }
         blackboard.appendLine("Goal: $goal")
-        repeat(maxSteps) {
+        val cp = taskId?.let { TaskCheckpoint(it, goal, messages, 0, code, skill?.name, tools.mapNotNull { t -> (t as JsonObject)["function"]?.jsonObject?.str("name") }) }
+        return loop(lead, goal, messages, tools, 0, maxSteps, cp)
+    }
+
+    /** Continues a checkpointed run from its last completed step. */
+    suspend fun resume(c: TaskCheckpoint, maxSteps: Int = if (c.code) 30 else 14): String {
+        code = c.code; skill = env.skills.firstOrNull { it.name == c.skillName }
+        artifacts += c.artifacts.map(::File).filter { it.exists() }; failures += c.failures
+        val tools = JsonArray(TOOLS.filter { (it as JsonObject)["function"]?.jsonObject?.str("name") in c.toolNames } +
+            if (c.toolNames.any { it.startsWith("mcp") }) loadMcpTools() else emptyList())
+        env.log(Step(StepKind.THOUGHT, "harness", "Resuming at step ${c.step + 1}"))
+        return loop(pickLead(), c.goal, c.messages.toMutableList(), tools, c.step, maxSteps, c)
+    }
+
+    private fun pickLead(): ModelRole =
+        settings.primaryRole.takeIf { available(it) } ?: listOf(ModelRole.OMNI, ModelRole.TEXT, ModelRole.VISION).firstOrNull { available(it) }
+            ?: error("No chat model downloaded yet — open the Models screen and install one.")
+
+    private suspend fun loop(lead: ModelRole, goal: String, messages: MutableList<JsonObject>, tools: JsonArray,
+                             start: Int, maxSteps: Int, cp0: TaskCheckpoint?): String {
+        var cp = cp0
+        val local = settings.provider(settings.slot(lead).providerId)?.local == true
+        val budget = if (local) 3000 else 24000 // on-device context is 4096 tokens; leave room for the reply
+        var reprompts = 0
+        for (step in start until maxSteps) {
             coroutineContext.ensureActive()
-            val reply = callModel(env, lead, messages, tools, media, env.onStream)
+            trimToBudget(messages, budget)
+            val reply = try { callModel(env, lead, messages, tools, media, env.onStream) } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                // One retry for transient model failures (cloud timeouts, a model reload after low memory).
+                env.log(Step(StepKind.ERROR, "harness", "Model error, retrying once: ${e.message}"))
+                kotlinx.coroutines.delay(1500)
+                callModel(env, lead, messages, tools, media, env.onStream)
+            }
             messages += reply.rawMessage
             if (reply.toolCalls.isEmpty()) {
+                val raw = reply.rawMessage.str("raw") ?: reply.content
+                // The model tried to call a tool but the markup didn't parse: tell it the exact format, once or twice.
+                if (reprompts < 2 && ("<tool" in raw || "\"arguments\"" in raw)) {
+                    reprompts++
+                    messages += message("user", "Your tool call couldn't be read. Reply with exactly " +
+                        "<tool_call>{\"name\": \"tool_name\", \"arguments\": {...}}</tool_call>, or answer in plain text.")
+                    continue
+                }
                 val answer = reply.content.ifBlank { "(no answer)" }
-                skill?.let { os.saveOutput(it.name, goal, "# ${it.name}\n\n**Task:** $goal\n\n$answer\n") }
+                skill?.let { s -> os.saveOutput(s.name, goal, "# ${s.name}\n\n**Task:** $goal\n\n$answer\n").let { r ->
+                    File(os.root, r.removePrefix("Saved ").trim()).takeIf { it.isFile }?.let { artifacts += it } } }
+                lastReport = RunReport(failures.isEmpty(), artifacts.distinct(), failures.toList())
+                cp?.let { checkpoints.delete(it.id) }
                 return answer
             }
             if (reply.content.isNotBlank()) env.log(Step(StepKind.THOUGHT, settings.slot(lead).model, reply.content))
             val results = runCalls(reply.toolCalls)
             reply.toolCalls.zip(results).forEach { (c, r) -> messages += toolResult(c.id, r) }
+            cp = cp?.copy(messages = messages.toList(), step = step + 1, artifacts = artifacts.map { it.path }, failures = failures.toList(),
+                updated = System.currentTimeMillis())
+            cp?.let(checkpoints::save)
         }
-        return "Stopped after $maxSteps steps without a final answer."
+        lastReport = RunReport(false, artifacts.distinct(), failures + "step limit reached")
+        return "Stopped after $maxSteps steps without a final answer. You can resume it from the Tasks tab."
     }
 
     /**
@@ -173,17 +227,25 @@ class Agent(private val env: AgentEnv) {
             .awaitAll().forEach { (i, r) -> out[i] = r }
         parsed.indices.filter { gated[it] }.forEach { i ->
             val (c, a) = parsed[i]
-            out[i] = if (!env.approve("${c.name} $a")) "User denied this action." else safeExec(c, a)
+            out[i] = if (!env.approve("[${riskOf(c.name).label}] ${c.name} $a")) "User denied this action." else safeExec(c, a)
         }
         out.map { it.orEmpty() }
     }
 
     private suspend fun safeExec(c: ToolCall, a: JsonObject): String {
         env.log(Step(StepKind.TOOL_CALL, c.name, a.toString().take(300)))
-        val r = try { execute(c.name, a) } catch (e: Exception) {
+        suspend fun attempt() = try { execute(c.name, a) } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             "Error: ${e.message}"
         }.take(6000)
+        var r = attempt()
+        if (r.startsWith("Error:") && c.name in RETRYABLE) { kotlinx.coroutines.delay(1500); r = attempt() }
+        // Verify the claim against reality; failures are fed back so the model can fix them.
+        val v = Verifier.check(c.name, a, r, workspace, os.root)
+        synchronized(failures) {
+            v.artifact?.let { artifacts += it }
+            if (!v.ok && r != "User denied this action.") { failures += "${c.name}: ${v.note}"; r += "\n[verification failed: ${v.note}]" }
+        }
         env.log(Step(StepKind.TOOL_RESULT, c.name, r.take(1500)))
         synchronized(blackboard) { blackboard.appendLine("${c.name} -> ${r.take(300)}") }
         return r

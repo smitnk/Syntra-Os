@@ -85,9 +85,16 @@ data class Skill(
 enum class StepKind { USER, THOUGHT, TOOL_CALL, TOOL_RESULT, ANSWER, ERROR, APPROVAL }
 
 @Serializable
-data class Step(val kind: StepKind, val who: String, val text: String)
+data class Step(
+    val kind: StepKind, val who: String, val text: String,
+    /** Files this answer produced (absolute paths, verified to exist). */
+    val files: List<String> = emptyList(),
+    /** null = not a task answer; false = some tool claim failed verification. */
+    val verified: Boolean? = null,
+    val notes: List<String> = emptyList(),
+)
 
-enum class TaskStatus { RUNNING, WAITING_APPROVAL, DONE, FAILED, CANCELLED }
+enum class TaskStatus { RUNNING, WAITING_APPROVAL, DONE, FAILED, CANCELLED, INTERRUPTED }
 
 @Serializable
 data class TaskRun(

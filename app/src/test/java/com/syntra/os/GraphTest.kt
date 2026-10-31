@@ -179,3 +179,40 @@ class GenericModelTest {
         assertTrue("<tool_response>\na\n</tool_response>" in contents[1] && "b" in contents[1])
     }
 }
+
+class HarnessTest {
+    private val tmp = java.nio.file.Files.createTempDirectory("syntra").toFile()
+
+    @Test fun checkpointRoundTrip() {
+        val store = com.syntra.os.agent.CheckpointStore(java.io.File(tmp, "tasks"))
+        val c = com.syntra.os.agent.TaskCheckpoint("t1", "goal", listOf(com.syntra.os.core.message("user", "hi")), 3, toolNames = listOf("shell"))
+        store.save(c)
+        val back = store.load("t1")!!
+        assertEquals(3, back.step); assertEquals("goal", back.goal); assertEquals(listOf("shell"), back.toolNames)
+        store.delete("t1"); assertEquals(null, store.load("t1"))
+    }
+
+    @Test fun verifiesFileWritesAgainstDisk() {
+        val ws = java.io.File(tmp, "ws").apply { mkdirs() }
+        val args = com.syntra.os.core.json.parseToJsonElement("""{"path":"a.txt","content":"hello"}""") as kotlinx.serialization.json.JsonObject
+        val V = com.syntra.os.agent.Verifier
+        assertTrue(!V.check("file_write", args, "Wrote a.txt.", ws, tmp).ok)       // claimed but missing
+        java.io.File(ws, "a.txt").writeText("hello")
+        val ok = V.check("file_write", args, "Wrote a.txt.", ws, tmp)
+        assertTrue(ok.ok); assertEquals("a.txt", ok.artifact!!.name)
+        assertTrue(!V.check("shell", args, "exit 2\nboom", ws, tmp).ok)
+        assertTrue(V.check("shell", args, "exit 0\nfine", ws, tmp).ok)
+        assertTrue(!V.check("http_request", args, "HTTP 500\n", ws, tmp).ok)
+    }
+
+    @Test fun trimsOldToolResultsFirst() {
+        val big = "x".repeat(4000)
+        val m = mutableListOf(com.syntra.os.core.message("system", "S"), com.syntra.os.core.message("user", "goal"),
+            com.syntra.os.core.toolResult("1", big), com.syntra.os.core.toolResult("2", big),
+            com.syntra.os.core.message("user", "a"), com.syntra.os.core.message("assistant", "b"), com.syntra.os.core.message("user", "c"))
+        com.syntra.os.agent.trimToBudget(m, 1500)
+        assertTrue(m[2].toString().contains("[trimmed"))
+        assertEquals("goal", m[1]["content"].toString().trim('"'))
+        assertTrue(com.syntra.os.agent.estTokens(m) <= 1500)
+    }
+}

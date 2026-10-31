@@ -90,6 +90,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     init {
         store.save("settings", Settings.serializer(), settings) // persists a freshly generated local API key
         applyOverrides()
+        // A task still RUNNING at startup means the process died mid-run; it can be resumed from its checkpoint.
+        tasks = tasks.map { if (it.status == TaskStatus.RUNNING || it.status == TaskStatus.WAITING_APPROVAL) it.copy(status = TaskStatus.INTERRUPTED) else it }
         server.start()
         runCatching { com.syntra.os.device.Linux.configure(app, settings.localApiKey) }
         java.io.File(app.filesDir, "crash.txt").takeIf { it.exists() }?.let { f ->
@@ -131,9 +133,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val code = text.startsWith("/code")
                 val goal = if (slash != null && (slash.first != null || code)) slash.second.ifBlank { text } else text
                 if (slash != null && slash.first == null && !code) error("No skill called ${text.substringBefore(' ')} — see the Skills tab (or use /code).")
-                val answer = Agent(e).run(goal, history, image, skill = slash?.first, code = code)
-                chat = chat + Step(StepKind.ANSWER, settings.slot(settings.primaryRole).model, answer)
-                editTask(task.id) { it.copy(status = TaskStatus.DONE, steps = it.steps + Step(StepKind.ANSWER, "syntra", answer)) }
+                val agent = Agent(e)
+                val answer = agent.run(goal, history, image, skill = slash?.first, code = code, taskId = task.id)
+                val rep = agent.lastReport
+                val done = Step(StepKind.ANSWER, settings.mainModelId ?: settings.slot(settings.primaryRole).model, answer,
+                    files = rep.artifacts.map { it.path }, verified = rep.verified, notes = rep.failures)
+                chat = chat + done
+                editTask(task.id) { it.copy(status = if (rep.failures.lastOrNull() == "step limit reached") TaskStatus.INTERRUPTED else TaskStatus.DONE,
+                    steps = it.steps + done.copy(who = "syntra")) }
                 lastAnswer = answer
                 if (settings.autoMemory) { val title = chatTitle; launch {
                     runCatching { extractMemories(e, title, text, answer) }.onFailure { status = "Memory: ${it.message}" }
@@ -152,6 +159,41 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    // ---- Resumable tasks ----
+    private val checkpoints = com.syntra.os.agent.CheckpointStore(java.io.File(app.filesDir, "tasks"))
+
+    /** Task ids that can be continued from a saved checkpoint. */
+    fun resumable(): Set<String> = checkpoints.all().map { it.id }.toSet()
+
+    fun resumeTask(id: String) {
+        if (busy) return
+        val cp = checkpoints.load(id) ?: return
+        busy = true; streaming = ""
+        editTask(id) { it.copy(status = TaskStatus.RUNNING) }
+        chat = chat + Step(StepKind.USER, "you · resume", cp.goal)
+        job = viewModelScope.launch {
+            val e = env { step -> status = "${step.who}: ${step.text}".take(90); editTask(id) { it.copy(steps = it.steps + step) } }
+            try {
+                val agent = Agent(e)
+                val answer = agent.resume(cp)
+                val rep = agent.lastReport
+                val done = Step(StepKind.ANSWER, "syntra", answer, files = rep.artifacts.map { it.path }, verified = rep.verified, notes = rep.failures)
+                chat = chat + done
+                editTask(id) { it.copy(status = TaskStatus.DONE, steps = it.steps + done) }
+                lastAnswer = answer
+            } catch (ex: CancellationException) { editTask(id) { it.copy(status = TaskStatus.INTERRUPTED) } }
+            catch (ex: Exception) {
+                editTask(id) { it.copy(status = TaskStatus.INTERRUPTED, steps = it.steps + Step(StepKind.ERROR, "system", ex.message.orEmpty())) }
+                chat = chat + Step(StepKind.ERROR, "system", ex.message ?: ex.toString())
+            } finally {
+                busy = false; status = ""; streaming = ""; pendingApproval = null
+                persistChat(); store.save("tasks", ListSerializer(TaskRun.serializer()), tasks)
+            }
+        }
+    }
+
+    fun discardCheckpoint(id: String) { checkpoints.delete(id); editTask(id) { it.copy(status = TaskStatus.CANCELLED) } }
 
     /** Background jobs write graph/tasks files directly; pick their changes up when the app returns. */
     fun reload() {
