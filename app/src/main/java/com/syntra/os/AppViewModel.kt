@@ -165,6 +165,102 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- Extensions (Phase 4) ----
+    val extManager = com.syntra.os.ext.ExtensionManager(app.filesDir) { settings.githubToken }
+    var extensions by mutableStateOf(store.load("extensions", ListSerializer(com.syntra.os.ext.InstalledExt.serializer()), emptyList())); private set
+    var plan by mutableStateOf<com.syntra.os.ext.InstallPlan?>(null); private set
+    var extStatus by mutableStateOf(""); private set
+    var extBusy by mutableStateOf(false); private set
+    val extUpdates = mutableStateMapOf<String, String>() // id → newer sha
+    init { com.syntra.os.ext.ExtRuntime.tools = extensions.filter { it.enabled && it.toolsReady }
+        .flatMap { e -> e.manifest.tools.map { t -> t.name to (e.manifest.id to t) } }.toMap() } // after `extensions` is initialised
+
+    private fun saveExtensions(list: List<com.syntra.os.ext.InstalledExt>) {
+        extensions = list
+        store.save("extensions", ListSerializer(com.syntra.os.ext.InstalledExt.serializer()), list)
+        com.syntra.os.ext.ExtRuntime.tools = list.filter { it.enabled && it.toolsReady }
+            .flatMap { e -> e.manifest.tools.map { t -> t.name to (e.manifest.id to t) } }.toMap()
+    }
+
+    fun inspectExtension(input: String) {
+        if (extBusy || input.isBlank()) return
+        extBusy = true; extStatus = "Inspecting…"; plan = null
+        viewModelScope.launch {
+            try { plan = extManager.inspect(input); extStatus = "" }
+            catch (e: Exception) { extStatus = "Couldn't inspect: ${e.message}" }
+            finally { extBusy = false }
+        }
+    }
+
+    fun cancelPlan() { plan = null }
+
+    /** Approved plan: download pinned files, register skills/agents, then install dependencies inside Linux. */
+    fun approvePlan() {
+        val p = plan ?: return
+        if (extBusy) return
+        extBusy = true; plan = null
+        viewModelScope.launch {
+            try {
+                var inst = extManager.install(p) { extStatus = it }
+                val id = p.manifest.id
+                // Skills and agents become slash commands; off by default so they don't grow every prompt.
+                val base = "Reference files for this skill are in /root/agentic-os/extensions/$id/ (read them with the shell tool when needed)."
+                val newSkills = p.manifest.skills.mapNotNull { sk -> extManager.read(id, sk.file)?.let { txt ->
+                    Skill(sk.name, sk.description.ifBlank { "Skill from ${p.repo}" }, "$txt\n\n$base", source = "ext:$id")
+                } } + p.manifest.agents.mapNotNull { ag -> extManager.read(id, ag.file)?.let { txt ->
+                    Skill(ag.name, ag.description, txt, source = "ext:$id")
+                } }
+                saveSkills(skills.filterNot { it.source == "ext:$id" } + newSkills)
+                if (p.commands.isNotEmpty()) {
+                    if (!linuxInstalled) {
+                        inst = inst.copy(log = "Dependencies need Linux: install Ubuntu in Workspace → Terminal, then tap Set up.")
+                    } else {
+                        extStatus = "Installing dependencies in Linux…"
+                        val out = com.syntra.os.device.Linux.run(getApplication(), p.commands.joinToString(" && "), 1_200_000)
+                        inst = inst.copy(toolsReady = out.startsWith("exit 0"), log = out.takeLast(1500))
+                    }
+                }
+                saveExtensions(extensions.filterNot { it.manifest.id == id } + inst)
+                extStatus = "Installed ${p.manifest.name}: ${p.manifest.skills.size} skills, ${p.manifest.agents.size} agents, ${p.manifest.tools.size} tools" +
+                    if (p.commands.isNotEmpty() && !inst.toolsReady) " — dependencies not ready" else ""
+            } catch (e: Exception) { extStatus = "Install failed: ${e.message}" }
+            finally { extBusy = false }
+        }
+    }
+
+    /** Re-runs the dependency commands (after Linux was installed, or a failed attempt). */
+    fun setupExtension(id: String) {
+        val e = extensions.firstOrNull { it.manifest.id == id } ?: return
+        if (extBusy) return
+        extBusy = true; extStatus = "Installing dependencies in Linux…"
+        viewModelScope.launch {
+            try {
+                val cmds = com.syntra.os.ext.Importer.commands(e.manifest, e.sha, e.repo)
+                val out = com.syntra.os.device.Linux.run(getApplication(), cmds.joinToString(" && ").ifBlank { "true" }, 1_200_000)
+                saveExtensions(extensions.map { if (it.manifest.id == id) it.copy(toolsReady = out.startsWith("exit 0"), log = out.takeLast(1500)) else it })
+                extStatus = if (out.startsWith("exit 0")) "${e.manifest.name} is ready" else "Setup failed — see the log on the card"
+            } catch (ex: Exception) { extStatus = "Setup failed: ${ex.message}" }
+            finally { extBusy = false }
+        }
+    }
+
+    fun toggleExtension(id: String) = saveExtensions(extensions.map { if (it.manifest.id == id) it.copy(enabled = !it.enabled) else it })
+
+    fun removeExtension(id: String) {
+        extManager.remove(id)
+        saveSkills(skills.filterNot { it.source == "ext:$id" })
+        saveExtensions(extensions.filterNot { it.manifest.id == id })
+        extUpdates.remove(id)
+    }
+
+    fun checkUpdates() = viewModelScope.launch {
+        extensions.forEach { e -> extManager.latestSha(e.repo)?.let { if (it != e.sha) extUpdates[e.manifest.id] = it } }
+        extStatus = if (extUpdates.isEmpty()) "Everything is up to date" else "${extUpdates.size} update(s) available"
+    }
+
+    /** Updates re-inspect so the user sees the new plan (files, commands, permissions) before approving. */
+    fun updateExtension(id: String) { extensions.firstOrNull { it.manifest.id == id }?.let { inspectExtension(it.repo) } }
+
     // ---- Resumable tasks ----
     private val checkpoints = com.syntra.os.agent.CheckpointStore(java.io.File(app.filesDir, "tasks"))
 

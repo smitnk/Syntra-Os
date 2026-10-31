@@ -49,7 +49,7 @@ enum class Risk(val label: String) {
 
 fun riskOf(name: String): Risk = when {
     name in PHONE_TOOLS -> Risk.DEVICE
-    name in LINUX_TOOLS -> Risk.CODE
+    name in LINUX_TOOLS || name in com.syntra.os.ext.ExtRuntime.tools -> Risk.CODE
     name.startsWith("mcp__") || name == "mcp_call" || name == "delegate" -> Risk.EXTERNAL
     name == "http_request" || name == "github" -> Risk.NETWORK
     name in setOf("file_write", "save_output", "memory_remember", "memory_link", "learn", "schedule_task", "cancel_schedule") -> Risk.LOCAL_WRITE
@@ -90,7 +90,11 @@ object Verifier {
                 if (code != null && code in 200..299) Verification(true) else Verification(false, "HTTP $code")
             }
             "web_search" -> if (result == "No results.") Verification(false, "no search results") else Verification(true)
-            else -> Verification(true)
+            else -> {
+                // Extension tools run in Linux and report "exit N" first.
+                val code = Regex("^exit (-?\\d+)").find(result)?.groupValues?.get(1)?.toIntOrNull()
+                if (code == null || code == 0) Verification(true) else Verification(false, "exit code $code")
+            }
         }
     }
 }

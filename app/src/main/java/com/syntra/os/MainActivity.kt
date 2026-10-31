@@ -148,7 +148,7 @@ class MainActivity : ComponentActivity() {
                             modifier = m)
                         tab == 1 -> TasksScreen(vm, m)
                         tab == 2 -> com.syntra.os.ui.WorkspaceScreen(vm, m)
-                        else -> SkillsScreen(vm, m)
+                        else -> com.syntra.os.ui.ExtensionsScreen(vm, m)
                     }
                 }
                 }

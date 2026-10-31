@@ -109,7 +109,8 @@ class Agent(private val env: AgentEnv) {
         if (chatOnly) routes = setOf(Route.CHAT) // Ask mode: answer from the model and memory only (fastest)
         val names = Router.toolNames(routes, code)
         val tools = JsonArray(TOOLS.filter { (it as JsonObject)["function"]?.jsonObject?.str("name") in names } +
-            if (Route.AUTOMATION in routes) loadMcpTools() else emptyList())
+            (if (Route.AUTOMATION in routes) loadMcpTools() else emptyList()) +
+            (if (chatOnly) emptyList() else com.syntra.os.ext.ExtRuntime.definitions()))
         val team = teamBriefing(goal, image)
         val messages = mutableListOf(message("system", systemPrompt())).apply {
             addAll(history.takeLast(10))
@@ -129,7 +130,8 @@ class Agent(private val env: AgentEnv) {
         code = c.code; skill = env.skills.firstOrNull { it.name == c.skillName }
         artifacts += c.artifacts.map(::File).filter { it.exists() }; failures += c.failures
         val tools = JsonArray(TOOLS.filter { (it as JsonObject)["function"]?.jsonObject?.str("name") in c.toolNames } +
-            if (c.toolNames.any { it.startsWith("mcp") }) loadMcpTools() else emptyList())
+            (if (c.toolNames.any { it.startsWith("mcp") }) loadMcpTools() else emptyList()) +
+            com.syntra.os.ext.ExtRuntime.definitions().filter { it["function"]?.jsonObject?.str("name") in c.toolNames })
         env.log(Step(StepKind.THOUGHT, "harness", "Resuming at step ${c.step + 1}"))
         return loop(pickLead(), c.goal, c.messages.toMutableList(), tools, c.step, maxSteps, c)
     }
@@ -356,7 +358,11 @@ class Agent(private val env: AgentEnv) {
             val client = mcp[a.str("server")] ?: error("no MCP server ${a.str("server")}")
             client.callTool(a.str("tool").orEmpty(), a["arguments"] as? JsonObject ?: JsonObject(emptyMap())).toString()
         }
-        else -> if (name.startsWith("mcp__")) {
+        else -> if (name in com.syntra.os.ext.ExtRuntime.tools) {
+            val (extId, t) = com.syntra.os.ext.ExtRuntime.tools.getValue(name)
+            check(com.syntra.os.device.Linux.installed(env.context)) { "Extension tools run in Linux — install Ubuntu in Workspace → Terminal" }
+            com.syntra.os.device.Linux.run(env.context, com.syntra.os.ext.ExtRuntime.command(extId, t, a.toString()), (t.timeoutSec + 15) * 1000L)
+        } else if (name.startsWith("mcp__")) {
             val server = name.removePrefix("mcp__").substringBefore("__")
             val tool = name.removePrefix("mcp__${server}__")
             (mcp[server] ?: error("no MCP server $server")).callTool(tool, a).toString()

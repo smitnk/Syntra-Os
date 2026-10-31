@@ -41,7 +41,7 @@ val ALWAYS_ASK = setOf("mcp_call", "delegate")
 val LINUX_TOOLS = setOf("shell", "code_agent", "hermes_agent", "claude_code")
 
 fun isSensitive(name: String, args: JsonObject, askPhone: Boolean, askLinux: Boolean = true): Boolean =
-    name in ALWAYS_ASK || (askLinux && name in LINUX_TOOLS) ||
+    name in ALWAYS_ASK || (askLinux && (name in LINUX_TOOLS || name in com.syntra.os.ext.ExtRuntime.tools)) ||
         (askPhone && name in PHONE_TOOLS) || name.startsWith("mcp__") ||
         ((name == "github" || name == "http_request") && (args.str("method") ?: "GET").uppercase() != "GET")
 
