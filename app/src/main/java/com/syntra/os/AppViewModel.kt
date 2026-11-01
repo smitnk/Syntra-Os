@@ -480,6 +480,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val v = com.syntra.os.device.Linux.variant(getApplication())
             mainHandler.post { linuxLines += "[setup] using ${v.name}"; com.syntra.os.device.Linux.lastProbe.lines().filter { it.isNotBlank() }.forEach { linuxLines += "[probe] $it" } }
             linux.start()
+            if (com.syntra.os.device.Linux.installed(getApplication())) { mainHandler.post { linuxLines += "$ ${com.syntra.os.device.Linux.REPAIR}" }; linux.send(com.syntra.os.device.Linux.REPAIR) }
         }
     }
 

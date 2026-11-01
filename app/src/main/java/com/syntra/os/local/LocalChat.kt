@@ -311,7 +311,7 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
             }
             val marker = if (useMedia != null) LlamaNative.marker() else null
             // LFM models use their native tool format; every other model gets its own chat template + a generic tool protocol.
-            val p = if (e.caps.isLfm) LfmPrompt.render(messages, tools, marker) else GenericPrompt.render(handle, messages, tools, marker)
+            val p = if (e.caps.isLfm) LfmPrompt.render(messages, tools, marker) else GenericPrompt.render(handle, messages, tools, marker, lfm2 = e.caps.arch.lowercase().startsWith("lfm2"))
             // One saved checkpoint per distinct system prompt (each router tool set has its own).
             val key = Integer.toHexString(p.text.toByteArray().copyOf(p.stableBytes).contentHashCode())
             val cpFile = java.io.File(e.dir, "checkpoint-$key.bin")

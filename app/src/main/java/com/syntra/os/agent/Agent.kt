@@ -125,23 +125,70 @@ class Agent(private val env: AgentEnv) {
                 dot?.allows((t as JsonObject)["function"]?.jsonObject?.str("name").orEmpty()) ?: true }))
         val team = teamBriefing(goal, image)
         lean = isLocal(lead)
+        // RECALL: what the user's notes, documents and learned knowledge already say.
+        val hits = runCatching { com.syntra.os.rag.Knowledge.relevant(goal, 4) }.getOrDefault(emptyList())
+        val dayMs = 24 * 3600_000L
+        val learnedFresh = hits.any { it.doc.source.startsWith("learned:") && System.currentTimeMillis() - it.doc.added < dayMs }
+        // NOTICE + LOOK UP: the harness (not the small model) decides when to research, then reads the best pages itself.
+        val webAllowed = !chatOnly && (dot == null || Route.WEB in dot.allowedRoutes()) && !code
+        val fresh = if (Cognition.shouldResearch(goal, webAllowed, hits.count { !it.doc.source.startsWith("learned:") || learnedFresh }, learnedFresh))
+            research(goal) else null
+        researched = fresh
+        val prevAnswer = history.lastOrNull { it.str("role") == "assistant" }?.str("content")
         val messages = mutableListOf(message("system", systemPrompt())).apply {
-            addAll(history.takeLast(if (lean) 4 else 10))
+            addAll(history.takeLast(if (lean) 4 else 10).map { m ->
+                if (lean && m.str("role") == "assistant") message("assistant", Cognition.shrinkOldAnswer(m.str("content").orEmpty())) else m })
             // Memory goes with the newest user turn, so the system prompt (cached on-device) rarely changes.
             val g = env.graph()
             val small = isLocal(lead)
             val mem = (g.search(goal).take(if (small) 4 else 8) + g.nodes.takeLast(if (small) 2 else 6)).distinctBy { it.id }
                 .joinToString("\n") { "- ${it.label} [${it.type}] ${it.notes.take(if (small) 80 else 120)}" }
-            // RAG: top passages from the user's documents, numbered for citation. Only lexical/semantic hits get in.
-            val hits = runCatching { com.syntra.os.rag.Knowledge.relevant(goal, 4) }.getOrDefault(emptyList())
-            val docs = if (hits.isEmpty()) "" else "\n\n[From your documents — answer from these when relevant and cite as [n]; say so if they don't cover it]\n" +
+            // RAG: top passages from the user's documents and learned notes, numbered for citation.
+            val docs = (fresh?.let { "\n\n[Fresh from the web just now — answer this question from it, cite the links, don't repeat earlier answers]\n$it" } ?: "") +
+                if (hits.isEmpty()) "" else "\n\n[From your documents — answer from these when relevant and cite as [n]; say so if they don't cover it]\n" +
                 com.syntra.os.rag.KnowledgeStore.contextBlock(hits)
             if (hits.isNotEmpty()) env.log(Step(StepKind.THOUGHT, "Knowledge", "Using " + hits.joinToString("; ") { it.cite }))
             add(message("user", goal + team + docs + if (mem.isNotBlank()) "\n\n[What you remember]\n$mem" else ""))
         }
         blackboard.appendLine("Goal: $goal")
         val cp = taskId?.let { TaskCheckpoint(it, goal, messages, 0, code, skill?.name, tools.mapNotNull { t -> (t as JsonObject)["function"]?.jsonObject?.str("name") }) }
-        return loop(lead, goal, messages, tools, 0, maxSteps, cp)
+        var answer = loop(lead, goal, messages, tools, 0, maxSteps, cp)
+        // CHECK: a copy of the previous reply means the question wasn't really answered — research (if not yet) and try once more.
+        if (Cognition.isRepeat(answer, prevAnswer)) {
+            env.log(Step(StepKind.THOUGHT, "harness", "Answer repeated the previous one; trying again"))
+            val more = if (researched == null && webAllowed) research(goal)?.also { researched = it } else null
+            messages += message("user", "That repeats your previous answer. Answer only this new request: \"$goal\"." +
+                (more?.let { "\n\n[Fresh from the web]\n$it" } ?: ""))
+            answer = loop(lead, goal, messages, tools, 0, 4, null)
+        }
+        // LEARN: what was looked up becomes dated knowledge, found again next time (and refreshed when it's stale).
+        researched?.let { learn(goal, it) }
+        return answer
+    }
+
+    /** Text gathered by [research] this run, or null. */
+    private var researched: String? = null
+
+    /** Search, then read the top 2 pages. Returns a compact, cited context block (or null when nothing came back). */
+    private suspend fun research(goal: String): String? = runCatching {
+        env.log(Step(StepKind.TOOL_CALL, "web_search", goal.take(200)))
+        val results = webSearch(goal)
+        env.log(Step(StepKind.TOOL_RESULT, "web_search", results.take(600)))
+        if (results == "No results.") return null
+        val urls = Regex("https?://[^\\s)\\]]+").findAll(results).map { it.value }.distinct().take(2).toList()
+        val pages = coroutineScope { urls.map { u -> async { runCatching { u to webFetch(u) }.getOrNull() } }.awaitAll().filterNotNull() }
+        pages.forEach { (u, _) -> env.log(Step(StepKind.TOOL_CALL, "web_fetch", u)) }
+        val per = if (lean) 900 else 2500
+        (pages.joinToString("\n\n") { (u, t) -> "Source: $u\n${t.take(per)}" }.ifBlank { results.take(per * 2) })
+    }.getOrNull()
+
+    private suspend fun learn(goal: String, text: String) = runCatching {
+        val st = com.syntra.os.rag.Knowledge.store ?: return@runCatching
+        val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        withContext(Dispatchers.IO) {
+            st.add("Learned $day: ${goal.take(60)}", "learned:$day", listOf(com.syntra.os.rag.PageText(0, "Question: $goal\n\n$text")), null)
+        }
+        env.log(Step(StepKind.THOUGHT, "memory", "Learned from the web and saved it to Knowledge"))
     }
 
     /** Continues a checkpointed run from its last completed step. */

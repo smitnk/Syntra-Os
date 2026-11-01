@@ -222,7 +222,24 @@ object Linux {
     }
 
     /** proot command line using the variant that works on this phone; [shell] runs inside Ubuntu. */
-    fun process(ctx: Context, shell: List<String>): ProcessBuilder = build(ctx, variant(ctx), shell)
+    fun process(ctx: Context, shell: List<String>): ProcessBuilder { fixups(ctx); return build(ctx, variant(ctx), shell) }
+
+    /**
+     * Ubuntu under proot has no init system, so package scripts that start services (dbus, systemd) fail and leave dpkg
+     * half-configured ("Errors were encountered while processing: dbus"). Block service starts and stub those scripts.
+     */
+    fun fixups(ctx: Context) {
+        if (!installed(ctx)) return
+        val r = rootfs(ctx)
+        File(r, "usr/sbin/policy-rc.d").takeIf { !it.exists() }?.let { it.parentFile?.mkdirs(); it.writeText("#!/bin/sh\nexit 101\n"); it.setExecutable(true, false) }
+        listOf("dbus", "dbus-system-bus-common", "systemd", "systemd-sysv", "udev").forEach { pkg ->
+            File(r, "var/lib/dpkg/info/$pkg.postinst").takeIf { it.isFile && !it.readText().startsWith("#!/bin/sh\n# syntra") }
+                ?.writeText("#!/bin/sh\n# syntra: services can't run under proot\nexit 0\n")
+        }
+    }
+
+    /** Finishes any half-done package setup after [fixups]. */
+    const val REPAIR = "dpkg --configure -a && apt-get -f install -y && echo '[repair] packages OK'"
 
     /** One-shot command for the agent. */
     suspend fun run(ctx: Context, command: String, timeoutMs: Long = 180_000): String = withContext(Dispatchers.IO) {

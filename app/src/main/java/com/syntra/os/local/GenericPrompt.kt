@@ -28,6 +28,15 @@ data class Capabilities(
  * `<tool_call>{json}</tool_call>` (Qwen/Hermes style), LFM3 markup and the looser fallbacks.
  */
 object GenericPrompt {
+    /** LFM2/LFM2.5's trained tool format (their model card): JSON tool list in the system prompt, pythonic calls back. */
+    fun lfm2ToolBlock(tools: JsonArray) = buildString {
+        append("\nList of tools: <|tool_list_start|>[")
+        append(tools.joinToString(", ") { LfmPrompt.compactTool(it) })
+        append("]<|tool_list_end|>\n")
+        append("To use a tool, reply with only <|tool_call_start|>[tool_name(arg=\"value\")]<|tool_call_end|>. ")
+        append("Use a tool whenever the answer needs facts you don't have; otherwise answer in plain text.")
+    }
+
     fun toolBlock(tools: JsonArray) = buildString {
         append("\n\n# Tools\nYou can call these tools. To call one, reply with only:\n")
         append("<tool_call>{\"name\": \"tool_name\", \"arguments\": {…}}</tool_call>\n")
@@ -36,17 +45,19 @@ object GenericPrompt {
     }
 
     /** Role/content pairs in the shape every chat template understands (tool results become user turns). */
-    fun flatten(messages: List<JsonObject>, tools: JsonArray?, mediaMarker: String?): Pair<List<String>, List<String>> {
+    fun flatten(messages: List<JsonObject>, tools: JsonArray?, mediaMarker: String?, lfm2: Boolean = false): Pair<List<String>, List<String>> {
         val roles = mutableListOf<String>(); val contents = mutableListOf<String>()
         val lastUser = messages.indexOfLast { it.str("role") == "user" }
         messages.forEachIndexed { i, m ->
             var role = m.str("role") ?: "user"
             var c = LfmPrompt.textOf(m)
             when (role) {
-                "system" -> if (tools != null && tools.isNotEmpty()) c += toolBlock(tools)
+                "system" -> if (tools != null && tools.isNotEmpty()) c += if (lfm2) lfm2ToolBlock(tools) else toolBlock(tools)
                 "assistant" -> c = m.str("raw") ?: (c + (m["tool_calls"] as? JsonArray).orEmpty().joinToString("") { tc ->
                     val f = tc.jsonObject["function"]?.jsonObject
-                    "\n<tool_call>{\"name\": \"${f?.str("name")}\", \"arguments\": ${f?.str("arguments") ?: "{}"}}</tool_call>"
+                    if (lfm2) "<|tool_call_start|>[${f?.str("name")}(" + runCatching { com.syntra.os.core.json.parseToJsonElement(f?.str("arguments") ?: "{}").jsonObject }
+                        .getOrDefault(JsonObject(emptyMap())).entries.joinToString(", ") { (k, v) -> "$k=$v" } + ")]<|tool_call_end|>"
+                    else "\n<tool_call>{\"name\": \"${f?.str("name")}\", \"arguments\": ${f?.str("arguments") ?: "{}"}}</tool_call>"
                 })
                 "tool" -> { role = "user"; c = "<tool_response>\n$c\n</tool_response>" }
                 else -> if (mediaMarker != null && i == lastUser) c = "$mediaMarker\n$c"
@@ -61,8 +72,8 @@ object GenericPrompt {
     fun chatMl(roles: List<String>, contents: List<String>) =
         roles.indices.joinToString("") { "<|im_start|>${roles[it]}\n${contents[it]}<|im_end|>\n" } + "<|im_start|>assistant\n"
 
-    fun render(handle: Long, messages: List<JsonObject>, tools: JsonArray?, mediaMarker: String?): RenderedPrompt {
-        val (roles, contents) = flatten(messages, tools, mediaMarker)
+    fun render(handle: Long, messages: List<JsonObject>, tools: JsonArray?, mediaMarker: String?, lfm2: Boolean = false): RenderedPrompt {
+        val (roles, contents) = flatten(messages, tools, mediaMarker, lfm2)
         fun fmt(r: List<String>, c: List<String>) = LlamaNative.applyTemplate(handle, r.toTypedArray(), c.toTypedArray()) ?: chatMl(r, c)
         val text = fmt(roles, contents)
         // Stable prefix = what two different user turns after the same system prompt have in common.
