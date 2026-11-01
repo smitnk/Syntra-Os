@@ -42,7 +42,25 @@ object Cognition {
         return a.intersect(b).size.toDouble() / minOf(a.size, b.size) >= 0.7
     }
 
-    /** Earlier assistant replies shrink to their first line, so the model reads the topic but can't copy the text. */
-    fun shrinkOldAnswer(text: String) = text.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty().take(160) +
-        if (text.length > 160) " …(earlier answer, shortened)" else ""
+    /** Earlier assistant replies shrink to their first sentence, so the model knows the topic but can't copy the text. */
+    fun shrinkOldAnswer(text: String) = clean(text).lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
+        .let { l -> l.substringBefore(". ").take(160).let { if (it.length < l.length) "$it." else it } }
+
+    private val FILLER = setOf("tell", "me", "full", "more", "news", "details", "detail", "about", "it", "that", "this", "those", "them",
+        "the", "please", "again", "give", "show", "explain", "need", "want", "specific", "complete", "whole", "and", "what", "about", "info", "information", "update", "updates")
+
+    /** Search words for [goal]; a vague follow-up ("tell me full news") borrows the topic of the previous request. */
+    fun searchQuery(goal: String, previousUser: List<String>): String {
+        val topic = words(goal) - FILLER
+        if (topic.size >= 2 || previousUser.isEmpty()) return goal
+        val prev = previousUser.asReversed().firstOrNull { (words(it) - FILLER).size >= 2 } ?: return goal
+        return (prev + " " + goal).take(200)
+    }
+
+    private val ECHO = listOf(Regex("\\[(fresh from the web|from your documents|what you remember)[^\\]]*]\\s*", RegexOption.IGNORE_CASE),
+        Regex("\\s*…?\\(earlier answer, shortened\\)", RegexOption.IGNORE_CASE),
+        Regex("^(web results \\(just looked up\\):|request:)\\s*", setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE)))
+
+    /** Removes prompt scaffolding a small model echoed into its reply. */
+    fun clean(answer: String) = ECHO.fold(answer) { a, r -> r.replace(a, "") }.trim()
 }

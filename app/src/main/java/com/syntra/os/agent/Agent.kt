@@ -52,10 +52,10 @@ class AgentEnv(
 
 /** Calls the model bound to a role: on-device llama.cpp or any OpenAI-compatible provider. */
 suspend fun callModel(env: AgentEnv, role: ModelRole, messages: List<JsonObject>, tools: JsonArray?, media: String?, onText: ((String) -> Unit)?,
-                      background: Boolean = false): ChatReply {
+                      background: Boolean = false, maxTokens: Int = 512): ChatReply {
     val slot = env.settings.slot(role)
     val provider = env.settings.provider(slot.providerId) ?: error("No provider set for the ${role.label} model (Setup)")
-    return if (provider.local) env.engines.complete(role, messages, tools, media, onText, background = background)
+    return if (provider.local) env.engines.complete(role, messages, tools, media, onText, background = background, maxTokens = maxTokens)
     else ChatClient.complete(provider, slot.model, messages, tools)
 }
 
@@ -130,9 +130,12 @@ class Agent(private val env: AgentEnv) {
         val dayMs = 24 * 3600_000L
         val learnedFresh = hits.any { it.doc.source.startsWith("learned:") && System.currentTimeMillis() - it.doc.added < dayMs }
         // NOTICE + LOOK UP: the harness (not the small model) decides when to research, then reads the best pages itself.
-        val webAllowed = !chatOnly && (dot == null || Route.WEB in dot.allowedRoutes()) && !code
+        // Ask mode may research too: looking things up is the harness's job, not a tool the model has to choose.
+        val webAllowed = (dot == null || Route.WEB in dot.allowedRoutes()) && !code
+        // Follow-ups like "tell me full news" carry no topic; search with the topic of the earlier turns.
+        val query = Cognition.searchQuery(goal, history.filter { it.str("role") == "user" }.map { it.str("content").orEmpty() })
         val fresh = if (Cognition.shouldResearch(goal, webAllowed, hits.count { !it.doc.source.startsWith("learned:") || learnedFresh }, learnedFresh))
-            research(goal) else null
+            research(query) else null
         researched = fresh
         val prevAnswer = history.lastOrNull { it.str("role") == "assistant" }?.str("content")
         val messages = mutableListOf(message("system", systemPrompt())).apply {
@@ -144,11 +147,17 @@ class Agent(private val env: AgentEnv) {
             val mem = (g.search(goal).take(if (small) 4 else 8) + g.nodes.takeLast(if (small) 2 else 6)).distinctBy { it.id }
                 .joinToString("\n") { "- ${it.label} [${it.type}] ${it.notes.take(if (small) 80 else 120)}" }
             // RAG: top passages from the user's documents and learned notes, numbered for citation.
-            val docs = (fresh?.let { "\n\n[Fresh from the web just now — answer this question from it, cite the links, don't repeat earlier answers]\n$it" } ?: "") +
-                if (hits.isEmpty()) "" else "\n\n[From your documents — answer from these when relevant and cite as [n]; say so if they don't cover it]\n" +
-                com.syntra.os.rag.KnowledgeStore.contextBlock(hits)
             if (hits.isNotEmpty()) env.log(Step(StepKind.THOUGHT, "Knowledge", "Using " + hits.joinToString("; ") { it.cite }))
-            add(message("user", goal + team + docs + if (mem.isNotBlank()) "\n\n[What you remember]\n$mem" else ""))
+            // Material first, question last: small models answer the last thing they read and copy bracketed notes,
+            // so the instructions are plain sentences and the request is restated at the end.
+            val material = buildString {
+                fresh?.let { append("Web results (just looked up):\n$it\n\n") }
+                if (hits.isNotEmpty()) append("From your documents and notes:\n${com.syntra.os.rag.KnowledgeStore.contextBlock(hits)}\n\n")
+                if (mem.isNotBlank()) append("Things you remember about the user:\n$mem\n\n")
+            }
+            add(message("user", if (material.isEmpty()) goal + team else material + team.trim().let { if (it.isEmpty()) "" else "$it\n\n" } +
+                "Using the information above, answer in full and in your own words. Mention the source links for facts from the web.\n\nRequest: " +
+                (if (query != goal) "$goal (about: $query)" else goal)))
         }
         blackboard.appendLine("Goal: $goal")
         val cp = taskId?.let { TaskCheckpoint(it, goal, messages, 0, code, skill?.name, tools.mapNotNull { t -> (t as JsonObject)["function"]?.jsonObject?.str("name") }) }
@@ -156,11 +165,12 @@ class Agent(private val env: AgentEnv) {
         // CHECK: a copy of the previous reply means the question wasn't really answered — research (if not yet) and try once more.
         if (Cognition.isRepeat(answer, prevAnswer)) {
             env.log(Step(StepKind.THOUGHT, "harness", "Answer repeated the previous one; trying again"))
-            val more = if (researched == null && webAllowed) research(goal)?.also { researched = it } else null
+            val more = if (researched == null && webAllowed) research(query)?.also { researched = it } else null
             messages += message("user", "That repeats your previous answer. Answer only this new request: \"$goal\"." +
                 (more?.let { "\n\n[Fresh from the web]\n$it" } ?: ""))
             answer = loop(lead, goal, messages, tools, 0, 4, null)
         }
+        answer = Cognition.clean(answer)
         // LEARN: what was looked up becomes dated knowledge, found again next time (and refreshed when it's stale).
         researched?.let { learn(goal, it) }
         return answer
@@ -218,19 +228,19 @@ class Agent(private val env: AgentEnv) {
         for (step in start until maxSteps) {
             coroutineContext.ensureActive()
             trimToBudget(messages, budget)
-            val reply = try { callModel(env, lead, messages, tools, media, env.onStream) } catch (e: Exception) {
+            val reply = try { callModel(env, lead, messages, tools, media, env.onStream, maxTokens = if (researched != null) 1000 else 512) } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 // Over the model's context: shrink hard (old turns and tool output) and try once more instead of failing the task.
                 if (e.message?.contains("too long for context") == true) {
                     while (messages.size > 4) messages.removeAt(1) // keep system prompt + the latest turns
                     trimToBudget(messages, budget / 2)
                     env.log(Step(StepKind.THOUGHT, "harness", "Prompt was too long for the model; trimmed and retrying"))
-                    callModel(env, lead, messages, tools, media, env.onStream)
+                    callModel(env, lead, messages, tools, media, env.onStream, maxTokens = if (researched != null) 1000 else 512)
                 } else {
                 // One retry for transient model failures (cloud timeouts, a model reload after low memory).
                 env.log(Step(StepKind.ERROR, "harness", "Model error, retrying once: ${e.message}"))
                 kotlinx.coroutines.delay(1500)
-                callModel(env, lead, messages, tools, media, env.onStream)
+                callModel(env, lead, messages, tools, media, env.onStream, maxTokens = if (researched != null) 1000 else 512)
                 }
             }
             messages += reply.rawMessage

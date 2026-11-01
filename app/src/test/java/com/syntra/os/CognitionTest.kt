@@ -26,7 +26,14 @@ class CognitionTest {
         val a = "Here's today's war news summary based on your memory: Global Conflict Updates, ongoing military operations in the region with casualties and aid."
         assertTrue(Cognition.isRepeat(a, a))
         assertFalse(Cognition.isRepeat("The Strait of Hormuz carries about a fifth of world oil; Iran threatened closure after strikes, tankers rerouted.", a))
-        assertTrue(Cognition.shrinkOldAnswer(a + "\n\nmore text " .repeat(20)).endsWith("(earlier answer, shortened)"))
+        assertTrue(Cognition.shrinkOldAnswer(a + "\n\nmore text ".repeat(20)).length <= 161)
+    }
+
+    @Test fun followUpsAndEchoes() {
+        val q = Cognition.searchQuery("tell me full news", listOf("Research today's AI news", "need specific details on strait of hormuz conflict"))
+        assertTrue("hormuz" in q)
+        assertTrue(Cognition.searchQuery("who won the IPL final", listOf("hi")) == "who won the IPL final")
+        assertTrue(Cognition.clean("[Fresh from the web just now — answer this] The Strait has traffic. (Earlier answer, shortened)") == "The Strait has traffic.")
     }
 
     @Test fun lfm2ToolList() {
