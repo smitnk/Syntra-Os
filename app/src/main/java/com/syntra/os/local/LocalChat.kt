@@ -208,8 +208,6 @@ data class CallMetric(val role: ModelRole, val loadMs: Long, val genMs: Long, va
     }
 }
 
-/** Models at or below this size (≈ a 350M–700M 4-bit model) are "small": the router can stay loaded next to the main model. */
-const val SMALL = 800_000_000L
 
 class LocalEngines(private val models: ModelManager, private val ctx: android.content.Context,
                    /** 0 = CPU only; >0 = layers offloaded to the GPU (Vulkan builds only). */
@@ -243,12 +241,13 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
         val t0 = System.currentTimeMillis()
         val files = models.installed(role) ?: error("${role.label} model not downloaded — open Setup → On-device models")
         val need = files.model.length() + 400_000_000L // weights + KV/compute buffers (projector loads later, only for images)
-        // Phones under ~11 GB keep one big model in RAM; bigger phones two. A small router (<1 GB) never counts or gets evicted for one.
+        // Phones under ~11 GB keep one main model in RAM; bigger phones two. The router (TEXT role, tiny) never counts and never
+        // pushes the main model out. Decided by role, not file size: a 4-bit 1.6B main model is under 1 GB too.
         val maxResident = if (memInfo().totalMem > 11_000_000_000L) 2 else 1
-        fun big() = loaded.values.filter { it.caps.fileBytes > SMALL }
-        val isBig = files.model.length() > SMALL
-        while ((isBig && big().size >= maxResident) || (loaded.isNotEmpty() && memInfo().availMem - need < 1_500_000_000L)) {
-            val victim = loaded.entries.filter { !locks.getValue(it.key).isLocked && !bgLocks.getValue(it.key).isLocked && (it.value.caps.fileBytes > SMALL || !isBig) }
+        val router = role == ModelRole.TEXT
+        fun mains() = loaded.keys.filter { it != ModelRole.TEXT }
+        while ((!router && mains().size >= maxResident) || (loaded.isNotEmpty() && memInfo().availMem - need < 1_500_000_000L)) {
+            val victim = loaded.entries.filter { !locks.getValue(it.key).isLocked && !bgLocks.getValue(it.key).isLocked && (it.key != ModelRole.TEXT || router) }
                 .minByOrNull { it.value.lastUse }?.key ?: break
             freeLoaded(victim)
         }
@@ -260,8 +259,7 @@ class LocalEngines(private val models: ModelManager, private val ctx: android.co
         // at the speed of the slowest thread, so 2 threads (the fast cores) beat 4; reading the prompt is compute-bound and uses 4.
         val cores = Runtime.getRuntime().availableProcessors()
         val gen = 2; val batch = if (cores >= 8) 4 else 2
-        val small = files.model.length() <= SMALL
-        val h = withContext(pool) { background(); LlamaNative.load(files.model.path, null, if (small) 1024 else 4096, if (small) 1 else gen, if (small) 2 else batch, gpuLayers()) }
+        val h = withContext(pool) { background(); LlamaNative.load(files.model.path, null, if (router) 2048 else 4096, if (router) 1 else gen, if (router) 2 else batch, gpuLayers()) }
         val info = LlamaNative.info(h)
         val caps = Capabilities(arch = info[0], contextTrain = info[1].toIntOrNull() ?: 0, params = info[2].toLongOrNull() ?: 0,
             description = info[3], hasTemplate = info[4].isNotBlank(), vision = files.mmproj != null, fileBytes = files.model.length())

@@ -173,10 +173,18 @@ class Agent(private val env: AgentEnv) {
             trimToBudget(messages, budget)
             val reply = try { callModel(env, lead, messages, tools, media, env.onStream) } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
+                // Over the model's context: shrink hard (old turns and tool output) and try once more instead of failing the task.
+                if (e.message?.contains("too long for context") == true) {
+                    while (messages.size > 4) messages.removeAt(1) // keep system prompt + the latest turns
+                    trimToBudget(messages, budget / 2)
+                    env.log(Step(StepKind.THOUGHT, "harness", "Prompt was too long for the model; trimmed and retrying"))
+                    callModel(env, lead, messages, tools, media, env.onStream)
+                } else {
                 // One retry for transient model failures (cloud timeouts, a model reload after low memory).
                 env.log(Step(StepKind.ERROR, "harness", "Model error, retrying once: ${e.message}"))
                 kotlinx.coroutines.delay(1500)
                 callModel(env, lead, messages, tools, media, env.onStream)
+                }
             }
             messages += reply.rawMessage
             if (reply.toolCalls.isEmpty()) {
@@ -543,7 +551,7 @@ Always include at least the main topic. Reply with ONLY JSON:
 {"entities":[{"label":"","type":"person|project|story|task|topic|place|app|preference","notes":""}],"relations":[{"from":"","to":"","relation":""}]}
 Use "Me" for the user.
 
-User: $userText
+User: ${userText.take(800)}
 Assistant: ${answer.take(800)}"""
     // On-device, memories are extracted by the small router model so the main model is never busy twice per message.
     val lead = env.settings.primaryRole

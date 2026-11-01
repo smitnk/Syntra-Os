@@ -162,9 +162,9 @@ private fun TeamRow(active: Set<ModelRole>, busy: Boolean, installed: Set<ModelR
                     .border(if (r in installed) 1.5.dp else 1.dp, if (on) ClaySoft else if (r in installed) Clay.copy(alpha = 0.6f) else Line, CircleShape)
                     .semantics { contentDescription = "${r.label} model ${if (on) "working" else if (r in installed) "ready" else "not downloaded"}" },
                     contentAlignment = Alignment.Center) {
-                    Text(r.name.take(1), color = if (on) Bg else Dim, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text(r.label.take(1), color = if (on) Bg else Dim, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
-                Text(r.name.lowercase(), color = if (on) Clay else Dim.copy(alpha = if (busy) 0.6f else 1f), fontSize = 9.sp)
+                Text(r.label.lowercase(), color = if (on) Clay else Dim.copy(alpha = if (busy) 0.6f else 1f), fontSize = 9.sp)
             }
         }
     }
